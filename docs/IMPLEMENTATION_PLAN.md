@@ -20,6 +20,20 @@
 5. 每个阶段都保持插件可禁用、主会话可继续。
 6. 新能力必须带固定输入测试或临时 Git 仓库集成测试。
 
+## 2.1 已确定的原生技术栈
+
+- TypeScript 6，ESM；
+- Node.js 22.19 或更高版本；
+- React 18 与 DSH Client UI Slots；
+- Cordis Plugin `apply` / `inject` 生命周期；
+- pnpm 11.7；
+- tsdown 构建 Node 与 Web Client 双入口；
+- Vitest 4、Testing Library 和 jsdom；
+- DSH `0.1.1-rc.2` 公共包作为首个兼容基线；
+- Node 内置 `node:sqlite` 与 DSH Storage 接口用于后续 Host 持久化。
+
+首个可运行切片先交付原生 `conversation.view` 只读时间线；SQLite、Checkpoint、Restore 和 Fork 分别进入后续独立实施计划。
+
 ## 3. 建议目录
 
 ```text
