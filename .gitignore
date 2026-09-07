@@ -2,6 +2,7 @@
 node_modules/
 .codegraph/
 .cursor/rules/codegraph.mdc
+.worktrees/
 dist/
 coverage/
 *.log

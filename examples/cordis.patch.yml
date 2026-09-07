@@ -1,0 +1,3 @@
+- insert:
+    - id: turnscope
+      name: '@zhaolianghz/dsh-turnscope'
