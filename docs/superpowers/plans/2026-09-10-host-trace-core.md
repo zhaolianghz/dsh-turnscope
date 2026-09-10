@@ -717,6 +717,8 @@ Guard every field access: `data` may be `null`, arrays may be missing, `argument
 
 **This layer owns the transition graph, not just terminal absorption.** Task 2's `transitionTurn` is deliberately permissive: it returns `next` whenever `current` is non-terminal, so `pending -> failed` is allowed there and the diagram in `docs/ARCHITECTURE.md §3.3` is *not* validated at that layer. The assembler is what decides which transitions actually occur — it emits `running` on `turn/start` and a terminal status only on `turn/end`. Do not assume an illegal transition has been filtered out upstream of you, and do not rely on `transitionTurn` to reject anything beyond a post-terminal update.
 
+**Guard the terminal state before every `upsertTurn` — this is a live hazard, not a theoretical one.** `TraceRepository.upsertTurn` is a plain last-write-wins upsert and deliberately does *not* apply the terminal-state rule; only `closeTurn` does (in SQL). So if the assembler replays an older, non-terminal `TurnRecord` for a turn that has since been closed — a late or duplicated event, a buffered event draining after `turn/end` — the upsert will **resurrect the closed turn** and silently revert its status. Apply `transitionTurn(existing.status, incoming.status)` and carry the existing status forward before writing. The index deliberately does not do this for you because a blanket DB-side rule would also discard the non-status fields (`activity_count`, `error_count`) the assembler is legitimately updating. Add a test that closes a turn and then re-upserts a stale `running` record, asserting the status stays terminal.
+
 `describeLabel` produces short user-facing text from the normalized event's kind and the upstream tool or command name — for example `Tool: read_file`, `Turn failed`, `Step 2`. It reads **only** names and identifiers, never payload text, so a label can never leak a secret even if redaction were bypassed.
 
 - [ ] **Step 4: Wire the subscription**
@@ -943,7 +945,7 @@ export function selectEvictions(
 - An empty input, a zero limit, and a `retentionBytes` smaller than a single entry all behave predictably without throwing.
 - The result is deterministic: two calls with identical input return identical arrays in identical order.
 
-Plus one integration assertion in `tests/trace-core.spec.ts`: a core started against a directory seeded with an already-expired object removes it, while an object referenced by a checkpoint survives.
+Plus one integration assertion in `tests/trace-core.spec.ts`: a core started against a directory seeded with an already-expired object removes it, while an object still referenced by an **activity** (via `activities.payload_ref`) survives. Do not write this against a checkpoint row: in this slice `CheckpointRecord` carries only Git-derived fingerprints (`indexDigest`, `worktreeDigest`, `fileDigests`), never a `sha256:` object ref, and `OBJECT_KINDS` admits only `'activity-payload'`. `referencedRefs()` therefore unions over `activities.payload_ref` alone, and the checkpoint arm is empty by construction. A later Restore/Fork plan that makes a checkpoint own a content object extends that union with its schema migration.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
