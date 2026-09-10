@@ -139,6 +139,106 @@ CREATE INDEX objects_sha256 ON objects (sha256);
 `
 
 /**
+ * Schema 2: everything the attribution and safety engines need.
+ *
+ * Purely **additive** — every statement is an `ALTER TABLE … ADD COLUMN` or a
+ * `CREATE TABLE` this version introduces. That is a deliberate choice over
+ * reshaping `turns` and `activities` to match `docs/ARCHITECTURE.md §25`
+ * column-for-column, and the reasons are worth recording, because a reader
+ * comparing the two files will notice the difference:
+ *
+ * - The v1 schema was never published. There is no user data in the world to
+ *   migrate, so a rewrite would buy compatibility with nothing while making the
+ *   one genuinely risky operation — re-typing a column in place — routine.
+ * - §25 drops `activities.seq` and keeps only `occurred_at`. DSH's event
+ *   timestamps are millisecond-resolution and routinely tie: in the reference
+ *   dump for this very event stream, seq 0, 2, 3, 4 and 7 all carry the same
+ *   millisecond. Without `seq` an activity list has no deterministic order, and
+ *   the timeline is exactly the surface where that shows. `seq` stays.
+ * - §25 writes timestamps as text. These columns are `INTEGER`: SQLite sorts and
+ *   indexes them directly, they cost half the bytes, and the wire-facing API
+ *   owns the conversion at its own boundary.
+ *
+ * `evidence_completeness` defaults to `'missing'` for pre-existing rows rather
+ * than `'complete'`: a turn recorded before this version existed has no evidence
+ * behind it, and the safety engine reads that field as a licence to decide.
+ */
+const SCHEMA_V2 = `
+ALTER TABLE turns ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE turns ADD COLUMN evidence_completeness TEXT NOT NULL DEFAULT 'missing';
+
+ALTER TABLE checkpoints ADD COLUMN merge_in_progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints ADD COLUMN rebase_in_progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints ADD COLUMN cherry_pick_in_progress INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE checkpoints ADD COLUMN completeness TEXT NOT NULL DEFAULT 'failed';
+
+CREATE TABLE checkpoint_paths (
+  id TEXT PRIMARY KEY NOT NULL,
+  checkpoint_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  staged INTEGER NOT NULL,
+  binary INTEGER NOT NULL,
+  previous_path TEXT,
+  content_hash TEXT,
+  mode TEXT,
+  blob_ref TEXT
+) STRICT;
+
+CREATE TABLE file_changes (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  attribution TEXT NOT NULL,
+  confidence TEXT NOT NULL,
+  baseline INTEGER NOT NULL,
+  before_hash TEXT,
+  after_hash TEXT,
+  current_hash TEXT,
+  previous_path TEXT,
+  evidence_json TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE commands (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL,
+  activity_id TEXT,
+  command TEXT NOT NULL,
+  exit_code INTEGER,
+  duration_ms INTEGER,
+  output_ref TEXT
+) STRICT;
+
+CREATE TABLE tests (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL,
+  command_id TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE safety_verdicts (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL,
+  level TEXT NOT NULL,
+  reasons_json TEXT NOT NULL,
+  allowed_actions_json TEXT NOT NULL,
+  recommended_action TEXT NOT NULL,
+  engine_version INTEGER NOT NULL,
+  evaluated_at INTEGER NOT NULL,
+  current_state_hash TEXT
+) STRICT;
+
+CREATE INDEX checkpoint_paths_checkpoint_id ON checkpoint_paths (checkpoint_id);
+CREATE INDEX file_changes_turn_id ON file_changes (turn_id);
+CREATE INDEX commands_turn_id ON commands (turn_id);
+CREATE INDEX tests_turn_id ON tests (turn_id);
+CREATE INDEX safety_verdicts_turn_id ON safety_verdicts (turn_id);
+`
+
+/**
  * Ordered migrations: `MIGRATIONS[n]` upgrades a database from `user_version`
  * `n` to `n + 1`, so applying every entry from the file's current version takes
  * it to {@link SCHEMA_VERSION}.
@@ -147,4 +247,4 @@ CREATE INDEX objects_sha256 ON objects (sha256);
  * inside one `BEGIN IMMEDIATE` transaction, so a failure part-way through leaves
  * `user_version` — and therefore the schema — exactly where it started.
  */
-export const MIGRATIONS: readonly string[] = Object.freeze([SCHEMA_V1])
+export const MIGRATIONS: readonly string[] = Object.freeze([SCHEMA_V1, SCHEMA_V2])

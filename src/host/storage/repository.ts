@@ -2,24 +2,41 @@ import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite'
 import { SCHEMA_VERSION } from '../domain/types.ts'
 import type {
   ActivityRecord,
-  CheckpointRecord,
+  Attribution,
+  AttributionConfidence,
+  CheckpointCompleteness,
   CheckpointPhase,
+  CheckpointPathState,
+  CheckpointRecord,
+  CommandRecord,
   EventKind,
   EventPhase,
+  EvidenceCompleteness,
+  FileChange,
+  FileChangeKind,
   ObjectRecord,
+  PathStatus,
+  RecoveryAction,
+  SafetyLevel,
+  SafetyReason,
+  SafetyVerdict,
   SessionRecord,
+  TestRecord,
   TurnRecord,
   TurnStatus,
+  ValidationKind,
+  ValidationStatus,
   WorkspaceRecord,
 } from '../domain/types.ts'
+import { TERMINAL_TURN_STATUSES } from '../domain/turn-state.ts'
 import type { IndexHandle } from './sqlite-index.ts'
 
 /**
  * The read side of the trace store: the port every other module consumes.
  *
- * It is the seam that keeps `node:sqlite` inside `src/storage`. It is also the
- * seam that would let a future backend (a remote store, a different engine) be
- * swapped in without touching the recorder, which is why every method is
+ * It is the seam that keeps `node:sqlite` inside `src/host/storage`. It is also
+ * the seam that would let a future backend (a remote store, a different engine)
+ * be swapped in without touching the recorder, which is why every method is
  * `async` even though the current driver is synchronous.
  */
 export interface TraceRepository {
@@ -28,6 +45,8 @@ export interface TraceRepository {
   upsertTurn(record: TurnRecord): Promise<void>
   /** Move a turn to a terminal status, unless it already reached one. */
   closeTurn(turnId: string, status: TurnStatus, endedAt: number): Promise<void>
+  /** Record what a turn's evidence turned out to be worth, after the fact. */
+  setEvidenceCompleteness(turnId: string, value: EvidenceCompleteness): Promise<void>
   /** The turns of a session, newest ordinal first. */
   listTurns(sessionId: string, limit: number): Promise<readonly TurnRecord[]>
   getTurn(turnId: string): Promise<TurnRecord | undefined>
@@ -37,8 +56,25 @@ export interface TraceRepository {
   putCheckpoint(record: CheckpointRecord): Promise<void>
   getCheckpoint(id: string): Promise<CheckpointRecord | undefined>
   listCheckpoints(turnId: string): Promise<readonly CheckpointRecord[]>
+  /** Record one observed path of a checkpoint. Idempotent on the path id. */
+  putCheckpointPath(record: CheckpointPathState): Promise<void>
+  /** The paths a checkpoint observed, ordered by path. */
+  listCheckpointPaths(checkpointId: string): Promise<readonly CheckpointPathState[]>
+  /** Record one attributed file change. Idempotent on the change id. */
+  putFileChange(record: FileChange): Promise<void>
+  /** The changes attributed to a turn, ordered by path. */
+  listFileChanges(turnId: string): Promise<readonly FileChange[]>
+  putCommand(record: CommandRecord): Promise<void>
+  listCommands(turnId: string): Promise<readonly CommandRecord[]>
+  putTest(record: TestRecord): Promise<void>
+  listTests(turnId: string): Promise<readonly TestRecord[]>
+  putSafetyVerdict(record: SafetyVerdict): Promise<void>
+  /** The most recent verdict for a turn, by evaluation time. */
+  getLatestVerdict(turnId: string): Promise<SafetyVerdict | undefined>
   putObjectRecord(record: ObjectRecord): Promise<void>
   statObject(ref: string): Promise<ObjectRecord | undefined>
+  /** Drop one object's index row. The bytes are the object store's business. */
+  deleteObject(ref: string): Promise<void>
   /** Every object ref still held by a record, sorted; retention pins these. */
   referencedRefs(): Promise<readonly string[]>
   storageUsage(): Promise<{ readonly objectBytes: number; readonly objectCount: number }>
@@ -115,6 +151,41 @@ function optionalDigestMap(
   return parsed as Readonly<Record<string, string>>
 }
 
+/** A `NOT NULL` column holding a JSON array of strings. */
+function stringArray(row: Row, column: string): readonly string[] {
+  const parsed = parsedArray(row, column, 'string')
+  return parsed as readonly string[]
+}
+
+/**
+ * A `NOT NULL` column holding a JSON array of objects.
+ *
+ * Elements are checked to be objects but not to match the record type they will
+ * be handed to: the shapes are owned by the domain, and duplicating them here
+ * would give a stored verdict two definitions to drift between.
+ */
+function objectArray(row: Row, column: string): readonly unknown[] {
+  return parsedArray(row, column, 'object')
+}
+
+function parsedArray(row: Row, column: string, element: 'string' | 'object'): readonly unknown[] {
+  const raw = text(row, column)
+  const parsed: unknown = JSON.parse(raw)
+  if (!Array.isArray(parsed)) {
+    throw new Error(`column ${column}: expected a JSON array, read ${raw}`)
+  }
+  for (const item of parsed) {
+    const matches =
+      element === 'string'
+        ? typeof item === 'string'
+        : item !== null && typeof item === 'object' && !Array.isArray(item)
+    if (!matches) {
+      throw new Error(`column ${column}: expected every element to be a ${element}, read ${raw}`)
+    }
+  }
+  return parsed
+}
+
 /**
  * A record's optional field has no representation in SQL — the column is simply
  * NULL — so the field is mapped back as *absent* rather than present-and-
@@ -135,6 +206,7 @@ const toTurn = (row: Row): TurnRecord => ({
   schemaVersion: SCHEMA_VERSION,
   id: text(row, 'id'),
   sessionId: text(row, 'session_id'),
+  workspaceId: text(row, 'workspace_id'),
   ordinal: integer(row, 'ordinal'),
   // Status, kind and phase are closed sets owned by the domain; the schema
   // cannot constrain them without duplicating those sets in DDL.
@@ -145,6 +217,7 @@ const toTurn = (row: Row): TurnRecord => ({
   endedAt: optionalInteger(row, 'ended_at'),
   activityCount: integer(row, 'activity_count'),
   errorCount: integer(row, 'error_count'),
+  evidenceCompleteness: text(row, 'evidence_completeness') as EvidenceCompleteness,
   ...absent('preCheckpointId', optionalText(row, 'pre_checkpoint_id')),
   ...absent('postCheckpointId', optionalText(row, 'post_checkpoint_id')),
 })
@@ -175,12 +248,82 @@ const toCheckpoint = (row: Row): CheckpointRecord => ({
   ...absent('headOid', optionalText(row, 'head_oid')),
   ...absent('branch', optionalText(row, 'branch')),
   cleanStart: flag(row, 'clean_start'),
+  mergeInProgress: flag(row, 'merge_in_progress'),
+  rebaseInProgress: flag(row, 'rebase_in_progress'),
+  cherryPickInProgress: flag(row, 'cherry_pick_in_progress'),
   ...absent('indexDigest', optionalText(row, 'index_digest')),
   ...absent('worktreeDigest', optionalText(row, 'worktree_digest')),
   ...absent('fileDigests', optionalDigestMap(row, 'file_digests')),
+  completeness: text(row, 'completeness') as CheckpointCompleteness,
   restorable: flag(row, 'restorable'),
   createdAt: integer(row, 'created_at'),
   ...absent('failureReason', optionalText(row, 'failure_reason')),
+})
+
+const toCheckpointPath = (row: Row): CheckpointPathState => ({
+  schemaVersion: SCHEMA_VERSION,
+  id: text(row, 'id'),
+  checkpointId: text(row, 'checkpoint_id'),
+  path: text(row, 'path'),
+  status: text(row, 'status') as PathStatus,
+  staged: flag(row, 'staged'),
+  binary: flag(row, 'binary'),
+  ...absent('previousPath', optionalText(row, 'previous_path')),
+  ...absent('contentHash', optionalText(row, 'content_hash')),
+  ...absent('mode', optionalText(row, 'mode')),
+  ...absent('blobRef', optionalText(row, 'blob_ref')),
+})
+
+const toFileChange = (row: Row): FileChange => ({
+  schemaVersion: SCHEMA_VERSION,
+  id: text(row, 'id'),
+  turnId: text(row, 'turn_id'),
+  path: text(row, 'path'),
+  kind: text(row, 'kind') as FileChangeKind,
+  attribution: text(row, 'attribution') as Attribution,
+  confidence: text(row, 'confidence') as AttributionConfidence,
+  baseline: flag(row, 'baseline'),
+  ...absent('beforeHash', optionalText(row, 'before_hash')),
+  ...absent('afterHash', optionalText(row, 'after_hash')),
+  ...absent('currentHash', optionalText(row, 'current_hash')),
+  ...absent('previousPath', optionalText(row, 'previous_path')),
+  evidenceRefs: stringArray(row, 'evidence_json'),
+})
+
+const toCommand = (row: Row): CommandRecord => ({
+  schemaVersion: SCHEMA_VERSION,
+  id: text(row, 'id'),
+  turnId: text(row, 'turn_id'),
+  ...absent('activityId', optionalText(row, 'activity_id')),
+  command: text(row, 'command'),
+  ...absent('exitCode', optionalInteger(row, 'exit_code')),
+  ...absent('durationMs', optionalInteger(row, 'duration_ms')),
+  ...absent('outputRef', optionalText(row, 'output_ref')),
+})
+
+const toTest = (row: Row): TestRecord => ({
+  schemaVersion: SCHEMA_VERSION,
+  id: text(row, 'id'),
+  turnId: text(row, 'turn_id'),
+  ...absent('commandId', optionalText(row, 'command_id')),
+  kind: text(row, 'kind') as ValidationKind,
+  status: text(row, 'status') as ValidationStatus,
+  summary: text(row, 'summary'),
+})
+
+const toVerdict = (row: Row): SafetyVerdict => ({
+  schemaVersion: SCHEMA_VERSION,
+  id: text(row, 'id'),
+  turnId: text(row, 'turn_id'),
+  level: text(row, 'level') as SafetyLevel,
+  reasons: objectArray(row, 'reasons_json') as readonly SafetyReason[],
+  allowedActions: stringArray(row, 'allowed_actions_json').map(
+    (action): RecoveryAction => action as RecoveryAction,
+  ),
+  recommendedAction: text(row, 'recommended_action') as RecoveryAction,
+  evaluatedAt: integer(row, 'evaluated_at'),
+  engineVersion: integer(row, 'engine_version'),
+  ...absent('currentStateHash', optionalText(row, 'current_state_hash')),
 })
 
 const toObjectRecord = (row: Row): ObjectRecord => ({
@@ -193,13 +336,36 @@ const toObjectRecord = (row: Row): ObjectRecord => ({
 })
 
 const TURN_COLUMNS =
-  'id, session_id, ordinal, status, started_at, ended_at, activity_count, error_count, pre_checkpoint_id, post_checkpoint_id'
+  'id, session_id, workspace_id, ordinal, status, started_at, ended_at, activity_count, error_count, evidence_completeness, pre_checkpoint_id, post_checkpoint_id'
 
 const ACTIVITY_COLUMNS =
   'id, turn_id, session_id, parent_id, kind, phase, seq, label, occurred_at, payload_ref, truncated'
 
 const CHECKPOINT_COLUMNS =
-  'id, workspace_id, turn_id, phase, head_oid, branch, clean_start, index_digest, worktree_digest, file_digests, restorable, created_at, failure_reason'
+  'id, workspace_id, turn_id, phase, head_oid, branch, clean_start, merge_in_progress, rebase_in_progress, cherry_pick_in_progress, index_digest, worktree_digest, file_digests, completeness, restorable, created_at, failure_reason'
+
+const CHECKPOINT_PATH_COLUMNS =
+  'id, checkpoint_id, path, status, staged, binary, previous_path, content_hash, mode, blob_ref'
+
+const FILE_CHANGE_COLUMNS =
+  'id, turn_id, path, kind, attribution, confidence, baseline, before_hash, after_hash, current_hash, previous_path, evidence_json'
+
+const COMMAND_COLUMNS = 'id, turn_id, activity_id, command, exit_code, duration_ms, output_ref'
+
+const TEST_COLUMNS = 'id, turn_id, command_id, kind, status, summary'
+
+const VERDICT_COLUMNS =
+  'id, turn_id, level, reasons_json, allowed_actions_json, recommended_action, engine_version, evaluated_at, current_state_hash'
+
+/**
+ * The terminal set as a SQL `IN` list, built from the single definition in
+ * `../domain/turn-state.ts`.
+ *
+ * The literals come from a closed union this package owns, so there is nothing
+ * to inject; spelling them out separately here is what previously let the SQL
+ * and the predicate disagree about which states are absorbing.
+ */
+const TERMINAL_STATUS_SQL = TERMINAL_TURN_STATUSES.map(status => `'${status}'`).join(', ')
 
 /**
  * Open a {@link TraceRepository} over an already-migrated index.
@@ -264,9 +430,10 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     // machine bug rather than the overwrite it is.
     statement(
       `INSERT INTO turns (${TURN_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          session_id = excluded.session_id,
+         workspace_id = excluded.workspace_id,
          ordinal = excluded.ordinal,
          status = excluded.status,
          started_at = excluded.started_at,
@@ -278,15 +445,32 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     ).run(
       record.id,
       record.sessionId,
+      record.workspaceId,
       record.ordinal,
       record.status,
       record.startedAt,
       nullable(record.endedAt),
       record.activityCount,
       record.errorCount,
+      record.evidenceCompleteness,
       nullable(record.preCheckpointId),
       nullable(record.postCheckpointId),
     )
+  }
+
+  /**
+   * `evidence_completeness` is deliberately absent from the `DO UPDATE` list
+   * above. The recorder upserts a turn on every event of that turn, and those
+   * records all carry the placeholder `'missing'`; including the column would
+   * let a routine activity overwrite the value {@link setEvidenceCompleteness}
+   * computed after observing the workspace. It is written on insert and then
+   * owned by that one method.
+   */
+  const setEvidenceCompleteness = async (
+    turnId: string,
+    value: EvidenceCompleteness,
+  ): Promise<void> => {
+    statement('UPDATE turns SET evidence_completeness = ? WHERE id = ?').run(value, turnId)
   }
 
   const closeTurn = async (
@@ -294,12 +478,12 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     status: TurnStatus,
     endedAt: number,
   ): Promise<void> => {
-    // The terminal set is spelled out here rather than read first and compared
-    // in JavaScript: one statement means a concurrent late event cannot slip
+    // The rule is applied in SQL rather than by reading first and comparing in
+    // JavaScript: one statement means a concurrent late event cannot slip
     // between the read and the write and resurrect a finished turn.
     statement(
       `UPDATE turns SET status = ?, ended_at = ?
-       WHERE id = ? AND status NOT IN ('completed', 'failed', 'interrupted')`,
+       WHERE id = ? AND status NOT IN (${TERMINAL_STATUS_SQL})`,
     ).run(status, endedAt, turnId)
   }
 
@@ -352,7 +536,7 @@ export function createRepository(handle: IndexHandle): TraceRepository {
   const putCheckpoint = async (record: CheckpointRecord): Promise<void> => {
     statement(
       `INSERT INTO checkpoints (${CHECKPOINT_COLUMNS})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          workspace_id = excluded.workspace_id,
          turn_id = excluded.turn_id,
@@ -360,9 +544,13 @@ export function createRepository(handle: IndexHandle): TraceRepository {
          head_oid = excluded.head_oid,
          branch = excluded.branch,
          clean_start = excluded.clean_start,
+         merge_in_progress = excluded.merge_in_progress,
+         rebase_in_progress = excluded.rebase_in_progress,
+         cherry_pick_in_progress = excluded.cherry_pick_in_progress,
          index_digest = excluded.index_digest,
          worktree_digest = excluded.worktree_digest,
          file_digests = excluded.file_digests,
+         completeness = excluded.completeness,
          restorable = excluded.restorable,
          created_at = excluded.created_at,
          failure_reason = excluded.failure_reason`,
@@ -374,13 +562,188 @@ export function createRepository(handle: IndexHandle): TraceRepository {
       nullable(record.headOid),
       nullable(record.branch),
       toSqlFlag(record.cleanStart),
+      toSqlFlag(record.mergeInProgress),
+      toSqlFlag(record.rebaseInProgress),
+      toSqlFlag(record.cherryPickInProgress),
       nullable(record.indexDigest),
       nullable(record.worktreeDigest),
       record.fileDigests === undefined ? null : JSON.stringify(record.fileDigests),
+      record.completeness,
       toSqlFlag(record.restorable),
       record.createdAt,
       nullable(record.failureReason),
     )
+  }
+
+  const putCheckpointPath = async (record: CheckpointPathState): Promise<void> => {
+    statement(
+      `INSERT INTO checkpoint_paths (${CHECKPOINT_PATH_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         checkpoint_id = excluded.checkpoint_id,
+         path = excluded.path,
+         status = excluded.status,
+         staged = excluded.staged,
+         binary = excluded.binary,
+         previous_path = excluded.previous_path,
+         content_hash = excluded.content_hash,
+         mode = excluded.mode,
+         blob_ref = excluded.blob_ref`,
+    ).run(
+      record.id,
+      record.checkpointId,
+      record.path,
+      record.status,
+      toSqlFlag(record.staged),
+      toSqlFlag(record.binary),
+      nullable(record.previousPath),
+      nullable(record.contentHash),
+      nullable(record.mode),
+      nullable(record.blobRef),
+    )
+  }
+
+  const listCheckpointPaths = async (
+    checkpointId: string,
+  ): Promise<readonly CheckpointPathState[]> => {
+    return all(
+      `SELECT ${CHECKPOINT_PATH_COLUMNS} FROM checkpoint_paths WHERE checkpoint_id = ?
+       ORDER BY path ASC`,
+      checkpointId,
+    ).map(toCheckpointPath)
+  }
+
+  const putFileChange = async (record: FileChange): Promise<void> => {
+    statement(
+      `INSERT INTO file_changes (${FILE_CHANGE_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         turn_id = excluded.turn_id,
+         path = excluded.path,
+         kind = excluded.kind,
+         attribution = excluded.attribution,
+         confidence = excluded.confidence,
+         baseline = excluded.baseline,
+         before_hash = excluded.before_hash,
+         after_hash = excluded.after_hash,
+         current_hash = excluded.current_hash,
+         previous_path = excluded.previous_path,
+         evidence_json = excluded.evidence_json`,
+    ).run(
+      record.id,
+      record.turnId,
+      record.path,
+      record.kind,
+      record.attribution,
+      record.confidence,
+      toSqlFlag(record.baseline),
+      nullable(record.beforeHash),
+      nullable(record.afterHash),
+      nullable(record.currentHash),
+      nullable(record.previousPath),
+      JSON.stringify(record.evidenceRefs),
+    )
+  }
+
+  const listFileChanges = async (turnId: string): Promise<readonly FileChange[]> => {
+    return all(
+      `SELECT ${FILE_CHANGE_COLUMNS} FROM file_changes WHERE turn_id = ? ORDER BY path ASC`,
+      turnId,
+    ).map(toFileChange)
+  }
+
+  const putCommand = async (record: CommandRecord): Promise<void> => {
+    statement(
+      `INSERT INTO commands (${COMMAND_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         turn_id = excluded.turn_id,
+         activity_id = excluded.activity_id,
+         command = excluded.command,
+         exit_code = excluded.exit_code,
+         duration_ms = excluded.duration_ms,
+         output_ref = excluded.output_ref`,
+    ).run(
+      record.id,
+      record.turnId,
+      nullable(record.activityId),
+      record.command,
+      nullable(record.exitCode),
+      nullable(record.durationMs),
+      nullable(record.outputRef),
+    )
+  }
+
+  const listCommands = async (turnId: string): Promise<readonly CommandRecord[]> => {
+    // No natural key orders commands within a turn, so the id does: it is derived
+    // from the upstream sequence, which is monotonic.
+    return all(
+      `SELECT ${COMMAND_COLUMNS} FROM commands WHERE turn_id = ? ORDER BY id ASC`,
+      turnId,
+    ).map(toCommand)
+  }
+
+  const putTest = async (record: TestRecord): Promise<void> => {
+    statement(
+      `INSERT INTO tests (${TEST_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         turn_id = excluded.turn_id,
+         command_id = excluded.command_id,
+         kind = excluded.kind,
+         status = excluded.status,
+         summary = excluded.summary`,
+    ).run(
+      record.id,
+      record.turnId,
+      nullable(record.commandId),
+      record.kind,
+      record.status,
+      record.summary,
+    )
+  }
+
+  const listTests = async (turnId: string): Promise<readonly TestRecord[]> => {
+    return all(`SELECT ${TEST_COLUMNS} FROM tests WHERE turn_id = ? ORDER BY id ASC`, turnId).map(
+      toTest,
+    )
+  }
+
+  const putSafetyVerdict = async (record: SafetyVerdict): Promise<void> => {
+    statement(
+      `INSERT INTO safety_verdicts (${VERDICT_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         turn_id = excluded.turn_id,
+         level = excluded.level,
+         reasons_json = excluded.reasons_json,
+         allowed_actions_json = excluded.allowed_actions_json,
+         recommended_action = excluded.recommended_action,
+         engine_version = excluded.engine_version,
+         evaluated_at = excluded.evaluated_at,
+         current_state_hash = excluded.current_state_hash`,
+    ).run(
+      record.id,
+      record.turnId,
+      record.level,
+      JSON.stringify(record.reasons),
+      JSON.stringify(record.allowedActions),
+      record.recommendedAction,
+      record.engineVersion,
+      record.evaluatedAt,
+      nullable(record.currentStateHash),
+    )
+  }
+
+  const getLatestVerdict = async (turnId: string): Promise<SafetyVerdict | undefined> => {
+    // A turn may be re-evaluated as the workspace moves, so "the verdict" is the
+    // newest one. The id breaks a tie inside one millisecond deterministically.
+    const row = one(
+      `SELECT ${VERDICT_COLUMNS} FROM safety_verdicts WHERE turn_id = ?
+       ORDER BY evaluated_at DESC, id DESC LIMIT 1`,
+      turnId,
+    )
+    return row === undefined ? undefined : toVerdict(row)
   }
 
   const getCheckpoint = async (id: string): Promise<CheckpointRecord | undefined> => {
@@ -419,18 +782,28 @@ export function createRepository(handle: IndexHandle): TraceRepository {
   }
 
   const referencedRefs = async (): Promise<readonly string[]> => {
-    // Activities are the only records that hold a plugin object ref in this
-    // slice. A checkpoint carries git digests, not refs: it observes the
-    // repository without creating anything in the object store, and `tree_ref`
-    // — the column a restorable checkpoint would use — is deliberately absent
-    // until a Restore/Fork plan adds it. Returning those digests as if they were
-    // refs would make retention pin strings no object can ever match, so the
-    // union over checkpoints is empty by construction rather than by omission.
+    // Every record that can own an object, unioned in one statement so the list
+    // cannot be assembled from a partial read. Three arms do hold refs now:
+    // activities carry redacted diagnostic payloads, checkpoint paths carry the
+    // raw file bytes a recovery would need, and commands carry their output.
+    // A ref this misses is an object retention will delete out from under a
+    // record that still names it.
     return all(
-      `SELECT DISTINCT payload_ref AS ref FROM activities
-       WHERE payload_ref IS NOT NULL
-       ORDER BY ref ASC`,
+      `SELECT DISTINCT ref FROM (
+         SELECT payload_ref AS ref FROM activities WHERE payload_ref IS NOT NULL
+         UNION
+         SELECT blob_ref AS ref FROM checkpoint_paths WHERE blob_ref IS NOT NULL
+         UNION
+         SELECT output_ref AS ref FROM commands WHERE output_ref IS NOT NULL
+       ) ORDER BY ref ASC`,
     ).map(row => text(row, 'ref'))
+  }
+
+  const deleteObject = async (ref: string): Promise<void> => {
+    // The index row only. The bytes belong to the object store, and retention
+    // deletes them there; a port method that reached into the filesystem would
+    // put path handling in two modules.
+    statement('DELETE FROM objects WHERE ref = ?').run(ref)
   }
 
   const storageUsage = async (): Promise<{
@@ -453,6 +826,7 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     upsertSession,
     upsertTurn,
     closeTurn,
+    setEvidenceCompleteness,
     listTurns,
     getTurn,
     appendActivity,
@@ -460,8 +834,19 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     putCheckpoint,
     getCheckpoint,
     listCheckpoints,
+    putCheckpointPath,
+    listCheckpointPaths,
+    putFileChange,
+    listFileChanges,
+    putCommand,
+    listCommands,
+    putTest,
+    listTests,
+    putSafetyVerdict,
+    getLatestVerdict,
     putObjectRecord,
     statObject,
+    deleteObject,
     referencedRefs,
     storageUsage,
     close,

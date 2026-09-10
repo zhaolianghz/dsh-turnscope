@@ -482,12 +482,14 @@ describe('recorder persistence', () => {
       schemaVersion: SCHEMA_VERSION,
       id: 's-1:turn:0',
       sessionId: SESSION,
+      workspaceId: WORKSPACE,
       ordinal: 0,
       status: 'completed',
       startedAt: TIME,
       endedAt: TIME + 1,
       activityCount: 4,
       errorCount: 0,
+      evidenceCompleteness: 'complete',
     })
     await playRecorder(h, [turnStart(0, 5)])
 

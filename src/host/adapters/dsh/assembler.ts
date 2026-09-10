@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION } from '../../domain/types.ts'
 import type { ActivityRecord, TurnRecord, TurnStatus } from '../../domain/types.ts'
-import { transitionTurn } from '../../domain/turn-state.ts'
+import { isTerminal, transitionTurn } from '../../domain/turn-state.ts'
 import { turnIdFor } from '../../domain/ids.ts'
 import type { NormalizedActivity } from './normalize.ts'
 import { UNATTRIBUTED_TURN, unattributedTurnId } from './normalize.ts'
@@ -16,13 +16,10 @@ import { UNATTRIBUTED_TURN, unattributedTurnId } from './normalize.ts'
  */
 export const BUFFER_CEILING = 256
 
-const TERMINAL: ReadonlySet<TurnStatus> = new Set<TurnStatus>([
-  'completed',
-  'failed',
-  'interrupted',
-])
-
-const isTerminal = (status: TurnStatus): boolean => TERMINAL.has(status)
+// `isTerminal` comes from the domain rather than being re-derived here. A second
+// copy of the terminal set is a second thing to forget to update: this module
+// absorbed turns on a three-name list, and adding `cancelled` and
+// `output_limited` to the domain would silently not have reached it.
 
 /** The records one ingested event asks the caller to persist. */
 export interface AssemblerOutput {
@@ -51,6 +48,7 @@ export interface TurnAssembler {
 interface TurnMoment {
   readonly id: string
   readonly sessionId: string
+  readonly workspaceId: string
   readonly ordinal: number
   status: TurnStatus
   readonly startedAt: number
@@ -117,12 +115,17 @@ export function createTurnAssembler(): TurnAssembler {
     schemaVersion: SCHEMA_VERSION,
     id: moment.id,
     sessionId: moment.sessionId,
+    workspaceId: moment.workspaceId,
     ordinal: moment.ordinal,
     status: moment.status,
     startedAt: moment.startedAt,
     endedAt: moment.endedAt,
     activityCount: moment.activityCount,
     errorCount: moment.errorCount,
+    // A placeholder. Only an observation of the workspace can say what a turn's
+    // evidence is worth, and that happens after the fact; `upsertTurn` is
+    // deliberately built not to overwrite what that observation decides.
+    evidenceCompleteness: 'missing',
   })
 
   /** The status an event would apply to its turn, or `undefined` for neither. */
@@ -191,6 +194,7 @@ export function createTurnAssembler(): TurnAssembler {
       moment = {
         id: turnId,
         sessionId: event.sessionId,
+        workspaceId: event.workspaceId,
         ordinal: event.turn ?? UNATTRIBUTED_TURN,
         status: 'pending',
         startedAt: Date.parse(event.occurredAt),

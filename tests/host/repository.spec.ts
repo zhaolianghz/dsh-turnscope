@@ -38,6 +38,8 @@ interface TurnPatch {
   readonly errorCount?: number
   readonly preCheckpointId?: string
   readonly postCheckpointId?: string
+  readonly workspaceId?: string
+  readonly evidenceCompleteness?: TurnRecord['evidenceCompleteness']
 }
 
 /**
@@ -49,12 +51,14 @@ const turn = (patch: TurnPatch = {}): TurnRecord => ({
   schemaVersion: SCHEMA_VERSION,
   id: patch.id ?? 's-1:turn:0',
   sessionId: patch.sessionId ?? 's-1',
+  workspaceId: patch.workspaceId ?? 'ws-1',
   ordinal: patch.ordinal ?? 0,
   status: patch.status ?? 'running',
   startedAt: patch.startedAt ?? START,
   endedAt: patch.endedAt,
   activityCount: patch.activityCount ?? 0,
   errorCount: patch.errorCount ?? 0,
+  evidenceCompleteness: patch.evidenceCompleteness ?? 'complete',
   ...(patch.preCheckpointId === undefined ? {} : { preCheckpointId: patch.preCheckpointId }),
   ...(patch.postCheckpointId === undefined ? {} : { postCheckpointId: patch.postCheckpointId }),
 })
@@ -100,6 +104,10 @@ interface CheckpointPatch {
   readonly worktreeDigest?: string
   readonly fileDigests?: Readonly<Record<string, string>>
   readonly restorable?: boolean
+  readonly mergeInProgress?: boolean
+  readonly rebaseInProgress?: boolean
+  readonly cherryPickInProgress?: boolean
+  readonly completeness?: CheckpointRecord['completeness']
   readonly createdAt?: number
   readonly failureReason?: string
 }
@@ -111,6 +119,10 @@ const checkpoint = (patch: CheckpointPatch = {}): CheckpointRecord => ({
   turnId: patch.turnId ?? 's-1:turn:0',
   phase: patch.phase ?? 'pre',
   cleanStart: patch.cleanStart ?? true,
+  mergeInProgress: patch.mergeInProgress ?? false,
+  rebaseInProgress: patch.rebaseInProgress ?? false,
+  cherryPickInProgress: patch.cherryPickInProgress ?? false,
+  completeness: patch.completeness ?? 'complete',
   restorable: patch.restorable ?? true,
   createdAt: patch.createdAt ?? START,
   ...(patch.headOid === undefined ? {} : { headOid: patch.headOid }),
@@ -251,6 +263,10 @@ describe('openIndex', () => {
       'parent_session_id',
       'created_at',
     ])
+    // Schema 2 adds its columns with ALTER TABLE, which appends them: the
+    // physical order is migration history, not the logical grouping the
+    // select lists use. Pinned exactly, so a future migration that reorders
+    // the table has to say so here.
     expect(columnNames(handle, 'turns')).toEqual([
       'id',
       'session_id',
@@ -262,6 +278,8 @@ describe('openIndex', () => {
       'error_count',
       'pre_checkpoint_id',
       'post_checkpoint_id',
+      'workspace_id',
+      'evidence_completeness',
     ])
     expect(columnNames(handle, 'activities')).toEqual([
       'id',
@@ -290,6 +308,10 @@ describe('openIndex', () => {
       'restorable',
       'created_at',
       'failure_reason',
+      'merge_in_progress',
+      'rebase_in_progress',
+      'cherry_pick_in_progress',
+      'completeness',
     ])
     expect(columnNames(handle, 'findings')).toEqual([
       'id',
@@ -314,7 +336,19 @@ describe('openIndex', () => {
       'created_at',
     ])
 
-    for (const table of ['workspaces', 'sessions', 'turns', 'activities', 'checkpoints', 'objects']) {
+    for (const table of [
+      'workspaces',
+      'sessions',
+      'turns',
+      'activities',
+      'checkpoints',
+      'objects',
+      'checkpoint_paths',
+      'file_changes',
+      'commands',
+      'tests',
+      'safety_verdicts',
+    ]) {
       expect(tableSql(handle, table)).toMatch(/STRICT/)
     }
   })
