@@ -329,6 +329,8 @@ git commit -m "feat: make turnscope a loadable DSH host plugin"
 
 - Produces: `SCHEMA_VERSION`, `TurnStatus`, `NormalizedEvent`, `ActivityRecord`, `TurnRecord`, `CheckpointRecord`, `WorkspaceRecord`, `SessionRecord`, `ObjectRecord`.
 - Produces: `activityIdFor(sessionId, seq)`, `turnIdFor(sessionId, turn)`, `checkpointIdFor(turnId, phase)`.
+
+**Pinned id formats — every producer must go through these functions; never hand-build an id.** `turnIdFor(sessionId, turn)` → `${sessionId}:turn:${turn}`; `activityIdFor(sessionId, seq)` → `${sessionId}:act:${seq}`; `checkpointIdFor(turnId, phase)` → `${turnId}:cp:${phase}`. Deriving a checkpoint id from `turnId` rather than `sessionId` is deliberate: it makes a turn's `pre` and `post` ids structurally incapable of colliding.
 - Produces: `transitionTurn(current: TurnStatus, next: TurnStatus): TurnStatus`.
 
 - [ ] **Step 1: Write the failing state-machine tests**
@@ -490,6 +492,8 @@ git commit -m "feat: redact secrets and truncate output before persistence"
 - Produces: `resolveDataRoot(config, env, homeDir): string`.
 - Produces: `writeFileAtomic(targetPath: string, bytes: Uint8Array): Promise<void>`.
 - Produces: `createObjectStore(root: string): ObjectStore` with `put(kind, bytes)`, `get(ref)`, `has(ref)`, `stat(ref)`, `listRefs()`.
+
+**Pinned object kinds.** `kind` is a plain `string`, but this slice uses exactly one literal value and no others: `'activity-payload'` — the redacted, truncated tool and command output that Task 6 stores. Define it as a frozen `OBJECT_KINDS` constant and use the constant at the call site. `fileDigests` does *not* go here; it is a JSON column on `checkpoints` (see Task 5). A later Restore/Fork plan adds `'diff'` and `'snapshot'` by extending that one object.
 - Produces: `ObjectRef = { ref: string; sha256: string; byteSize: number }`.
 
 - [ ] **Step 1: Write the failing storage tests**
@@ -618,6 +622,19 @@ Expected: FAIL because the storage modules do not exist.
 
 Tables are `STRICT`, with `INTEGER` epoch-millisecond timestamps and `TEXT` ids, following `docs/ARCHITECTURE.md §4.1`: `workspaces`, `sessions`, `turns`, `activities`, `checkpoints`, `findings`, `forks`, `objects`. Create the `findings` and `forks` tables now even though this slice does not write them — the schema is versioned and adding tables later would force a migration. Index `activities(turn_id)`, `turns(session_id, ordinal)`, `checkpoints(turn_id)`, and `objects(sha256)`.
 
+**Columns must correspond one-to-one with the Task 2 record fields — this is the contract, and a missing column is a defect, not a simplification.** In particular:
+
+- `workspaces(id, repo_root, repo_root_hash, settings_json, created_at)`
+- `sessions(id, workspace_id, upstream_session_id, parent_session_id, created_at)` — `parent_session_id` is nullable.
+- `turns(id, session_id, ordinal, status, started_at, ended_at, activity_count, error_count, pre_checkpoint_id, post_checkpoint_id)` — `ended_at`, `pre_checkpoint_id` and `post_checkpoint_id` are nullable; `activity_count` and `error_count` are `INTEGER NOT NULL`.
+- `activities(id, turn_id, session_id, parent_id, kind, phase, seq, label, occurred_at, payload_ref, truncated)` — `parent_id` and `payload_ref` nullable; `truncated` is `INTEGER NOT NULL` holding 0 or 1.
+- `checkpoints(id, workspace_id, turn_id, phase, head_oid, branch, clean_start, index_digest, worktree_digest, file_digests, restorable, created_at, failure_reason)` — `head_oid`, `branch`, `index_digest`, `worktree_digest`, `file_digests` and `failure_reason` nullable; `clean_start` and `restorable` are `INTEGER NOT NULL` holding 0 or 1; `file_digests` holds the JSON-encoded `Record<string, string>`.
+- `objects(ref, kind, byte_size, sha256, created_at)` — all `NOT NULL`.
+
+Note there is deliberately **no `tree_ref` column**. `docs/ARCHITECTURE.md §4.1` lists one, but this slice performs zero Git writes and therefore never creates a tree object to reference. A later Restore/Fork plan that needs it adds the column with a schema migration, which is exactly what the versioned schema is for. Do not add a column that nothing in this slice can populate.
+
+Map SQL `NULL` onto the record's explicit `undefined` for `TurnRecord.endedAt` (which Task 2 declared `number | undefined` under `exactOptionalPropertyTypes`) — a round-trip of a turn with no `ended_at` must read back with `endedAt === undefined`, not `null`.
+
 `closeTurn` implements the terminal-state rule in SQL: `UPDATE turns SET status = ?, ended_at = ? WHERE id = ? AND status NOT IN ('completed','failed','interrupted')`. Let the database enforce it rather than reading first and racing.
 
 `createRepository` wraps the synchronous `DatabaseSync` API in `async` methods (the port is async so a future backend can be too) and uses `db.exec('BEGIN IMMEDIATE')` / `COMMIT` / `ROLLBACK` around multi-statement writes, matching the shipped pattern.
@@ -697,6 +714,8 @@ Expected: FAIL because the adapter modules do not exist.
 Guard every field access: `data` may be `null`, arrays may be missing, `arguments` is a raw JSON string that must never be `JSON.parse`d during normalization (parse failures are a recorded diagnostic, not a crash). Set `occurredAt` from `event.time` converted to an ISO-8601 string.
 
 `createTurnAssembler` is a closure holding only in-memory state: a map of open turns and a bounded buffer (ceiling 256) of events whose turn is not yet known. `ingest` returns the records to persist and performs no I/O — that separation is what makes the state machine testable without a database. The buffer is keyed by `sessionId:turn`; on `turn/start` the buffer for that key drains and its events are emitted with correct ids. When the buffer is at its ceiling, the oldest entry is dropped and a diagnostic recorded — the turn itself is still created, so no turn is ever lost.
+
+**This layer owns the transition graph, not just terminal absorption.** Task 2's `transitionTurn` is deliberately permissive: it returns `next` whenever `current` is non-terminal, so `pending -> failed` is allowed there and the diagram in `docs/ARCHITECTURE.md §3.3` is *not* validated at that layer. The assembler is what decides which transitions actually occur — it emits `running` on `turn/start` and a terminal status only on `turn/end`. Do not assume an illegal transition has been filtered out upstream of you, and do not rely on `transitionTurn` to reject anything beyond a post-terminal update.
 
 `describeLabel` produces short user-facing text from the normalized event's kind and the upstream tool or command name — for example `Tool: read_file`, `Turn failed`, `Step 2`. It reads **only** names and identifiers, never payload text, so a label can never leak a secret even if redaction were bypassed.
 
@@ -860,6 +879,10 @@ Note the deliberate choices: `shell: false` so no argument is ever reinterpreted
 `createGitPort` builds only `git` argv arrays — `['rev-parse', '--show-toplevel']`, `['rev-parse', 'HEAD']`, `['symbolic-ref', '--short', '-q', 'HEAD']`, `['status', '--porcelain=v1', '-z']`, `['hash-object', '--stdin']`. There is no string concatenation anywhere in the module; the only literal argument lists are constants. Parse `-z` output by splitting on `\0` and reading the two-character status code, handling the rename form (`R` is followed by two NUL-terminated paths). Treat a non-zero `git` exit as "not available" and return `undefined` rather than a partial value — a repository in a conflicted or unusual state must degrade, not lie.
 
 `fileDigests` reads each file through `node:fs/promises` and pipes the bytes to `git hash-object --stdin`. Deliberately **without** `-w`: the hash is computed but nothing is written into the object database, so checkpointing cannot grow or alter the user's repository.
+
+**Conversion point you must implement here.** `GitPort.fileDigests` returns a `ReadonlyMap<string, string>`, but `CheckpointRecord.fileDigests` is a `Readonly<Record<string, string>>` because the record is JSON-serialized into SQLite (a `Map` would silently serialize to `{}`). `createCheckpoint` owns that conversion — `Object.fromEntries(map)` — and a test must assert the stored record round-trips through `JSON.parse(JSON.stringify(...))` with the digests intact.
+
+**Checkpoint ids come from `checkpointIdFor(turnId, phase)`** (Task 2) — never hand-build one.
 
 - [ ] **Step 4: Implement checkpoint creation**
 
