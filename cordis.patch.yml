@@ -1,0 +1,4 @@
+# dsh bundle patch: inserts the Turnscope host plugin into a profile's layer stack.
+- insert:
+    - id: turnscope
+      name: '@zhaolianghz/dsh-turnscope'
