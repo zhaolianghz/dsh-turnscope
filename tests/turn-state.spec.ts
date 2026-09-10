@@ -90,14 +90,20 @@ describe('identifiers', () => {
   })
 
   it('produces byte-identical strings across repeated selection', () => {
-    const selected = [
+    const derive = (): readonly string[] => [
       turnIdFor('s1', 3),
       activityIdFor('s1', 7),
       checkpointIdFor(turnIdFor('s1', 3), 'post'),
     ]
-    for (const id of selected) {
-      expect(id).toBe(`${id}`)
-      expect([...id].join('')).toBe(id)
+    const first = derive()
+    for (const id of first) {
+      // ASCII-only and whitespace-free, so the bytes survive every encoding
+      // path (SQLite TEXT, JSON, a log line) without normalization.
+      expect(id).toMatch(/^[^\s]+$/)
+      expect(id).toBe(Buffer.from(id, 'utf8').toString('utf8'))
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(derive()).toEqual(first)
     }
   })
 })
