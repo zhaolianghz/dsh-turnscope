@@ -563,7 +563,7 @@ git commit -m "feat: add plugin-private storage with atomic writes and content-a
 - Produces: `TRACESCOPE_APPLICATION_ID = 1414035280` and `SCHEMA_VERSION`.
 - Produces: `openIndex(dbPath: string): IndexHandle` with `db`, `close()`, and `migrate()`.
 - Produces: `createRepository(handle: IndexHandle): TraceRepository`.
-- Produces interface `TraceRepository` — the port the rest of the system consumes; nothing outside `src/storage/` may import `node:sqlite`.
+- Produces interface `TraceRepository` — the port the rest of the system consumes. **No module under `src/` outside `src/storage/` may import `node:sqlite`.** The rule binds production source only: a *test* may import the driver to forge a foreign fixture independently of the code under test, which is the stronger way to write that guard test.
 
 ```ts
 export interface TraceRepository {
@@ -957,7 +957,7 @@ Expected: FAIL because `src/storage/retention.ts` does not exist.
 
 `selectEvictions` is pure and total. Collect the set of expired-or-over-limit candidates, remove every `pinned` entry, sort by `createdAt` ascending (ties broken by `ref` so the order is fully deterministic), and take entries until the survivors satisfy both limits. A `pinned` entry means "referenced by a checkpoint or a fork", computed by the caller from `referencedRefs()`, not by this function.
 
-Wire a retention sweep into `startTraceCore`: run once after startup and after each `post` checkpoint. Pin every ref returned by `repository.referencedRefs()`. Delete evicted objects from the object store and their `objects` rows. **The sweep may only ever delete inside the object store directory** — it must never touch `worktrees/`, the SQLite file, or anything outside the plugin's own data root. Enforce this by constructing every deletion path from the object store's own root and rejecting any candidate that does not resolve inside it.
+Wire a retention sweep into `startTraceCore`: run once after startup and after each `post` checkpoint. Pin every ref returned by `repository.referencedRefs()`. Delete evicted objects from the object store and their `objects` rows. **Add `deleteObject(ref): Promise<void>` to the `TraceRepository` port for that row deletion** — do not reach through `IndexHandle.db` with raw SQL. Retention is a storage concern and the port is where it belongs; keeping the statements behind the port is also what stops the row-deletion SQL from drifting out of sync with the column constants. **The sweep may only ever delete inside the object store directory** — it must never touch `worktrees/`, the SQLite file, or anything outside the plugin's own data root. Enforce this by constructing every deletion path from the object store's own root and rejecting any candidate that does not resolve inside it.
 
 Finally, complete the diagnostics requirement of `docs/PRD.md FR-11`: expose plugin version, the resolved data root, storage usage, enabled state, and the most recent bounded errors through `diagnostics.snapshot()`. Every diagnostic message must already be redacted — pass it through `redact` at the `record` call site, and add a test asserting that recording a message containing a fake key stores the masked form.
 
