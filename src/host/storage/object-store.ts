@@ -5,17 +5,59 @@ import { writeFileAtomic } from './atomic.ts'
 import { resolveObjectsDir } from './paths.ts'
 
 /**
- * The object kinds this slice may store.
+ * The object kinds this store may hold.
  *
  * Frozen, and the only source of valid values: a typo'd kind would file an
  * object where nothing later looks for it, so {@link ObjectStore.put} rejects
- * anything outside this set. A later Restore/Fork plan adds `diff` and
- * `snapshot` by extending this one object.
+ * anything outside this set.
+ *
+ * The two kinds exist because they are **different data**, not different sizes
+ * or lifetimes — `docs/ARCHITECTURE.md §12.3` and its decision 6 draw the line:
+ *
+ * - `ACTIVITY_PAYLOAD` is diagnostic: command and tool output shown to a user.
+ *   Secrets are masked before it is stored, and masking is lossy on purpose.
+ * - `RECOVERY_BLOB` is a file's exact bytes as the workspace held them. It is
+ *   **not** redacted, because a redacted snapshot cannot restore anything — the
+ *   substitution would be written back over the user's file. Its protection is
+ *   different in kind: it never leaves the machine, it is written `0o600` inside
+ *   the plugin-private root, and retention bounds it.
+ *
+ * That reversal is the whole reason {@link ObjectStore.put} takes an explicit
+ * {@link RedactionPolicy} rather than inferring one. A caller has to say which
+ * of the two it is storing, and the store refuses a pair that disagrees.
  */
 export const OBJECT_KINDS = Object.freeze({
-  /** Redacted, truncated tool and command output. Written by Task 6. */
+  /** Redacted, truncated tool and command output. */
   ACTIVITY_PAYLOAD: 'activity-payload',
+  /** A file's exact bytes, captured so a recovery can put them back. */
+  RECOVERY_BLOB: 'recovery-blob',
 } as const)
+
+export type ObjectKind = (typeof OBJECT_KINDS)[keyof typeof OBJECT_KINDS]
+
+/**
+ * Whether the bytes handed to {@link ObjectStore.put} were redacted first.
+ *
+ * `applied` means the caller ran the redactor; `raw-bytes` means the bytes are
+ * the workspace's own and must stay byte-identical. There is deliberately no
+ * default: a default would let a new call site inherit whichever policy happened
+ * to be convenient, which is precisely the mistake this parameter exists to
+ * make impossible.
+ */
+export type RedactionPolicy = 'applied' | 'raw-bytes'
+
+/**
+ * The one policy each kind can carry.
+ *
+ * Enforced rather than assumed so that a mis-wired call site fails loudly: a
+ * diagnostic payload offered as raw bytes is either a caller about to write an
+ * unredacted secret into the diagnostic store, or one that has confused the two
+ * classes. Both should stop here rather than at a leak.
+ */
+const POLICY_FOR_KIND: Readonly<Record<ObjectKind, RedactionPolicy>> = Object.freeze({
+  [OBJECT_KINDS.ACTIVITY_PAYLOAD]: 'applied',
+  [OBJECT_KINDS.RECOVERY_BLOB]: 'raw-bytes',
+})
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set(Object.values(OBJECT_KINDS))
 
@@ -29,12 +71,24 @@ export interface ObjectRef {
   readonly byteSize: number
 }
 
+/** How one object is being stored. */
+export interface PutOptions {
+  /**
+   * Which side of the redaction boundary these bytes are on.
+   *
+   * Required, and checked against the kind: see {@link OBJECT_KINDS}.
+   */
+  readonly redaction: RedactionPolicy
+}
+
 export interface ObjectStore {
   /**
    * Store `bytes` and return their content address. Idempotent: identical bytes
    * land on one file, and an object that already exists is not rewritten.
+   *
+   * `options.redaction` must agree with `kind`; a pair that disagrees rejects.
    */
-  put(kind: string, bytes: Uint8Array): Promise<ObjectRef>
+  put(kind: string, bytes: Uint8Array, options: PutOptions): Promise<ObjectRef>
   /** Read the object, verifying it still hashes to its own name. */
   get(ref: string): Promise<Uint8Array>
   /** Whether an object exists, without reading it. */
@@ -96,10 +150,18 @@ const refOf = (hex: string, byteSize: number): ObjectRef =>
 export function createObjectStore(root: string): ObjectStore {
   const objectsDir = resolveObjectsDir(root)
 
-  const put = async (kind: string, bytes: Uint8Array): Promise<ObjectRef> => {
+  const put = async (kind: string, bytes: Uint8Array, options: PutOptions): Promise<ObjectRef> => {
     if (!KNOWN_KINDS.has(kind)) {
       throw new Error(
         `unknown object kind ${JSON.stringify(kind)}; expected one of ${[...KNOWN_KINDS].join(', ')}`,
+      )
+    }
+
+    const required = POLICY_FOR_KIND[kind as ObjectKind]
+    if (options.redaction !== required) {
+      throw new Error(
+        `object kind ${JSON.stringify(kind)} must be stored with redaction ` +
+          `${JSON.stringify(required)}, received ${JSON.stringify(options.redaction)}`,
       )
     }
     const hex = createHash('sha256').update(bytes).digest('hex')

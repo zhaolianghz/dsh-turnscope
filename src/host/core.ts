@@ -100,15 +100,16 @@ export function createRecorder(options: RecorderOptions): Recorder {
    * Write a payload's bytes before the activity that references them.
    *
    * Redaction has already run — `normalizeEvent` hands over bytes that have
-   * been redacted and truncated — so the object store never sees raw text. On
-   * failure the payload is dropped from the event rather than recorded: an
-   * activity must never name an object that is not there.
+   * been redacted and truncated — so the store is told `redaction: 'applied'`
+   * and would reject the call if the kind and the policy disagreed. On failure
+   * the payload is dropped from the event rather than recorded: an activity must
+   * never name an object that is not there.
    */
   const writePayload = async (event: NormalizedActivity): Promise<NormalizedActivity> => {
     const bytes = event.payloadBytes
     const meta = event.payload
     if (bytes === undefined || meta === undefined) return event
-    const stored = await store.put(OBJECT_KINDS.ACTIVITY_PAYLOAD, bytes)
+    const stored = await store.put(OBJECT_KINDS.ACTIVITY_PAYLOAD, bytes, { redaction: 'applied' })
     await sink.putObjectRecord({
       schemaVersion: SCHEMA_VERSION,
       ref: stored.ref,

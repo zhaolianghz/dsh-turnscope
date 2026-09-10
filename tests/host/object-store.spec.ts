@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { OBJECT_KINDS, createObjectStore, type ObjectStore } from '../../src/host/storage/object-store.ts'
 
 const KIND = OBJECT_KINDS.ACTIVITY_PAYLOAD
+/** The policy every diagnostic-payload call site must declare. */
+const REDACTED = { redaction: 'applied' } as const
 /** Binary input covering the extremes: a zero byte and a 0xFF byte. */
 const BINARY = new Uint8Array([0x00, 0xff, 0x10, 0x00, 0x7f, 0xff])
 
@@ -44,15 +46,40 @@ afterEach(async () => {
 })
 
 describe('OBJECT_KINDS', () => {
-  it('pins the one literal this slice uses', () => {
+  it('pins the two literals, one per side of the redaction boundary', () => {
     expect(OBJECT_KINDS.ACTIVITY_PAYLOAD).toBe('activity-payload')
+    expect(OBJECT_KINDS.RECOVERY_BLOB).toBe('recovery-blob')
     expect(Object.isFrozen(OBJECT_KINDS)).toBe(true)
+  })
+})
+
+describe('the redaction boundary', () => {
+  it('stores a recovery blob byte-for-byte, unlike a diagnostic payload', async () => {
+    // These are the workspace's own bytes, captured so a recovery can put them
+    // back. Redacting them would write the substitution over the user's file.
+    const secret = Buffer.from('api_key = sk-abcdefghijklmnopqrstuvwx', 'utf8')
+
+    const { ref } = await store.put(OBJECT_KINDS.RECOVERY_BLOB, secret, { redaction: 'raw-bytes' })
+
+    expect(Buffer.from(await store.get(ref)).toString('utf8')).toBe(secret.toString('utf8'))
+  })
+
+  it('refuses a diagnostic payload offered as raw bytes', async () => {
+    await expect(
+      store.put(OBJECT_KINDS.ACTIVITY_PAYLOAD, BINARY, { redaction: 'raw-bytes' }),
+    ).rejects.toThrow(/must be stored with redaction "applied"/)
+  })
+
+  it('refuses a recovery blob offered as already redacted', async () => {
+    await expect(
+      store.put(OBJECT_KINDS.RECOVERY_BLOB, BINARY, { redaction: 'applied' }),
+    ).rejects.toThrow(/must be stored with redaction "raw-bytes"/)
   })
 })
 
 describe('createObjectStore.put', () => {
   it('returns a sha256 ref and the input size', async () => {
-    const result = await store.put(KIND, BINARY)
+    const result = await store.put(KIND, BINARY, REDACTED)
 
     expect(result.ref).toBe(`sha256:${sha256Hex(BINARY)}`)
     expect(result.ref).toMatch(/^sha256:[0-9a-f]{64}$/)
@@ -61,7 +88,7 @@ describe('createObjectStore.put', () => {
   })
 
   it('stores under a two-character prefix directory with mode 0o600', async () => {
-    const { ref } = await store.put(KIND, BINARY)
+    const { ref } = await store.put(KIND, BINARY, REDACTED)
     const hex = ref.slice('sha256:'.length)
 
     expect(await objectFiles(join(root, 'objects'))).toEqual([
@@ -73,22 +100,22 @@ describe('createObjectStore.put', () => {
   })
 
   it('is idempotent: identical bytes reuse the same object file', async () => {
-    const first = await store.put(KIND, BINARY)
-    const second = await store.put(KIND, BINARY)
+    const first = await store.put(KIND, BINARY, REDACTED)
+    const second = await store.put(KIND, BINARY, REDACTED)
 
     expect(second.ref).toBe(first.ref)
     expect(await objectFiles(join(root, 'objects'))).toHaveLength(1)
   })
 
   it('rejects an unknown kind rather than filing an unreachable object', async () => {
-    await expect(store.put('activity-paylod', BINARY)).rejects.toThrow(/unknown object kind/)
+    await expect(store.put('activity-paylod', BINARY, REDACTED)).rejects.toThrow(/unknown object kind/)
     expect(await store.listRefs()).toEqual([])
   })
 })
 
 describe('createObjectStore.get', () => {
   it('round-trips arbitrary binary including 0x00 and 0xFF', async () => {
-    const { ref } = await store.put(KIND, BINARY)
+    const { ref } = await store.put(KIND, BINARY, REDACTED)
 
     expect(new Uint8Array(await store.get(ref))).toEqual(BINARY)
   })
@@ -122,7 +149,7 @@ describe('createObjectStore.has and stat', () => {
   })
 
   it('reports metadata for a stored object', async () => {
-    const { ref, sha256, byteSize } = await store.put(KIND, BINARY)
+    const { ref, sha256, byteSize } = await store.put(KIND, BINARY, REDACTED)
 
     expect(await store.has(ref)).toBe(true)
     expect(await store.stat(ref)).toEqual({ ref, sha256, byteSize })
@@ -133,13 +160,13 @@ describe('createObjectStore.listRefs', () => {
   it('is empty before anything is written and lists what is stored', async () => {
     expect(await store.listRefs()).toEqual([])
 
-    const { ref } = await store.put(KIND, BINARY)
+    const { ref } = await store.put(KIND, BINARY, REDACTED)
 
     expect(await store.listRefs()).toEqual([ref])
   })
 
   it('ignores files that are not valid ref names', async () => {
-    const { ref } = await store.put(KIND, BINARY)
+    const { ref } = await store.put(KIND, BINARY, REDACTED)
     await writeFile(join(root, 'objects', 'README'), 'not a ref')
 
     expect(await store.listRefs()).toEqual([ref])
