@@ -1,7 +1,7 @@
-import { SCHEMA_VERSION } from '../domain/types.ts'
-import type { ActivityRecord, TurnRecord, TurnStatus } from '../domain/types.ts'
-import { transitionTurn } from '../domain/turn-state.ts'
-import { turnIdFor } from '../domain/ids.ts'
+import { SCHEMA_VERSION } from '../../domain/types.ts'
+import type { ActivityRecord, TurnRecord, TurnStatus } from '../../domain/types.ts'
+import { transitionTurn } from '../../domain/turn-state.ts'
+import { turnIdFor } from '../../domain/ids.ts'
 import type { NormalizedActivity } from './normalize.ts'
 import { UNATTRIBUTED_TURN, unattributedTurnId } from './normalize.ts'
 

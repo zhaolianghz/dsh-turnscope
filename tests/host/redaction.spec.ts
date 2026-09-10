@@ -1,8 +1,8 @@
 import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
-import { SECRET_PATTERNS } from '../src/redaction/patterns.ts'
-import { redact, redactDeep } from '../src/redaction/redact.ts'
-import { truncateBytes } from '../src/redaction/truncate.ts'
+import { SECRET_PATTERNS } from '../../src/host/redaction/patterns.ts'
+import { redact, redactDeep } from '../../src/host/redaction/redact.ts'
+import { truncateBytes } from '../../src/host/redaction/truncate.ts'
 
 // ---------------------------------------------------------------------------
 // Fixtures. Every secret carries a distinctive tail so absence can be asserted

@@ -7,11 +7,11 @@ import { CallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import { apply, name } from '../src/index.ts'
-import { createRepository } from '../src/storage/repository.ts'
-import type { TraceRepository } from '../src/storage/repository.ts'
-import { openIndex } from '../src/storage/sqlite-index.ts'
-import { resolveIndexPath } from '../src/trace-core.ts'
+import { apply, name } from '../../src/index.ts'
+import { createRepository } from '../../src/host/storage/repository.ts'
+import type { TraceRepository } from '../../src/host/storage/repository.ts'
+import { openIndex } from '../../src/host/storage/sqlite-index.ts'
+import { resolveIndexPath } from '../../src/host/core.ts'
 
 const SECRET = `sk-${'abcdefghijklmnopqrstuvwx'}`
 

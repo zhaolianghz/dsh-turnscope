@@ -2,8 +2,8 @@
 import type { ConversationNode, ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import { cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
-import { TurnscopeView } from '../src/client/TurnscopeView.tsx'
-import { zh, type TurnscopeKey } from '../src/client/locales.ts'
+import { TurnscopeView } from '../../src/client/TurnscopeView.tsx'
+import { zh, type TurnscopeKey } from '../../src/client/locales.ts'
 
 afterEach(cleanup)
 

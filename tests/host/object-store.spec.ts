@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { OBJECT_KINDS, createObjectStore, type ObjectStore } from '../src/storage/object-store.ts'
+import { OBJECT_KINDS, createObjectStore, type ObjectStore } from '../../src/host/storage/object-store.ts'
 
 const KIND = OBJECT_KINDS.ACTIVITY_PAYLOAD
 /** Binary input covering the extremes: a zero byte and a 0xFF byte. */

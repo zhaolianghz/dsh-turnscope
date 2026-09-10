@@ -16,11 +16,11 @@ import type {
   TurnRecord,
   TurnStatus,
   WorkspaceRecord,
-} from '../src/domain/types.ts'
-import type { IndexHandle } from '../src/storage/sqlite-index.ts'
-import { SCHEMA_VERSION, TRACESCOPE_APPLICATION_ID } from '../src/storage/schema.ts'
-import { openIndex } from '../src/storage/sqlite-index.ts'
-import { createRepository, type TraceRepository } from '../src/storage/repository.ts'
+} from '../../src/host/domain/types.ts'
+import type { IndexHandle } from '../../src/host/storage/sqlite-index.ts'
+import { SCHEMA_VERSION, TRACESCOPE_APPLICATION_ID } from '../../src/host/storage/schema.ts'
+import { openIndex } from '../../src/host/storage/sqlite-index.ts'
+import { createRepository, type TraceRepository } from '../../src/host/storage/repository.ts'
 
 const START = 1_700_000_000_000
 const END = START + 5_000

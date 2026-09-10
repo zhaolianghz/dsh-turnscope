@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import { apply, inject } from '../src/client/index.ts'
+import { apply, inject } from '../../src/client/index.ts'
 
 interface RuntimeExports {
   SlotRegistry: new (ctx: Context) => object

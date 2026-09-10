@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { resolveConfig } from './config.ts'
 import { Diagnostics } from './diagnostics.ts'
-import { startTraceCore } from './trace-core.ts'
+import { startTraceCore } from './host/core.ts'
 
 export const name = 'turnscope'
 

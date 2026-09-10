@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { activityIdFor, checkpointIdFor, turnIdFor } from '../src/domain/ids.ts'
-import { transitionTurn } from '../src/domain/turn-state.ts'
-import { SCHEMA_VERSION, type NormalizedEvent, type TurnStatus } from '../src/domain/types.ts'
+import { activityIdFor, checkpointIdFor, turnIdFor } from '../../src/host/domain/ids.ts'
+import { transitionTurn } from '../../src/host/domain/turn-state.ts'
+import { SCHEMA_VERSION, type NormalizedEvent, type TurnStatus } from '../../src/host/domain/types.ts'
 
 const NON_TERMINAL: readonly TurnStatus[] = ['pending', 'running']
 const TERMINAL: readonly TurnStatus[] = ['completed', 'failed', 'interrupted']

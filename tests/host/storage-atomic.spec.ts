@@ -2,9 +2,9 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_CONFIG, type TurnscopeConfig } from '../src/config.ts'
-import { writeFileAtomic } from '../src/storage/atomic.ts'
-import { resolveDataRoot } from '../src/storage/paths.ts'
+import { DEFAULT_CONFIG, type TurnscopeConfig } from '../../src/config.ts'
+import { writeFileAtomic } from '../../src/host/storage/atomic.ts'
+import { resolveDataRoot } from '../../src/host/storage/paths.ts'
 
 /** Owner-only access bits, with the file-type bits masked off. */
 const permissions = async (path: string): Promise<number> => (await stat(path)).mode & 0o777

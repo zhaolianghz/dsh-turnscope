@@ -1,6 +1,6 @@
 import type { ConversationNode, ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import { describe, expect, it } from 'vitest'
-import { deriveTurnModels } from '../src/client/turn-model.ts'
+import { deriveTurnModels } from '../../src/client/turn-model.ts'
 
 const snapshotWith = (
   nodes: readonly ConversationNode[],

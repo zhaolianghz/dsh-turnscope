@@ -1,11 +1,11 @@
 import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
-import type { TurnscopeConfig } from '../config.ts'
-import { activityIdFor, turnIdFor } from '../domain/ids.ts'
-import { SCHEMA_VERSION } from '../domain/types.ts'
-import type { EventKind, EventPhase, NormalizedEvent } from '../domain/types.ts'
-import { redact } from '../redaction/redact.ts'
-import { truncateBytes } from '../redaction/truncate.ts'
+import type { TurnscopeConfig } from '../../../config.ts'
+import { activityIdFor, turnIdFor } from '../../domain/ids.ts'
+import { SCHEMA_VERSION } from '../../domain/types.ts'
+import type { EventKind, EventPhase, NormalizedEvent } from '../../domain/types.ts'
+import { redact } from '../../redaction/redact.ts'
+import { truncateBytes } from '../../redaction/truncate.ts'
 
 /**
  * The upstream SessionEvent envelope, as broadly as the adapter needs it.

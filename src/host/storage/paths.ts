@@ -1,5 +1,5 @@
 import { isAbsolute, join, resolve } from 'node:path'
-import type { TurnscopeConfig } from '../config.ts'
+import type { TurnscopeConfig } from '../../config.ts'
 
 /** Subdirectory of a resolved root that holds the content-addressed objects. */
 export const OBJECTS_DIRNAME = 'objects'
