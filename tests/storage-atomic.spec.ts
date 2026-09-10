@@ -71,6 +71,30 @@ describe('resolveDataRoot', () => {
     expect(resolved.startsWith(process.cwd())).toBe(false)
     expect(resolved).not.toContain(`${process.cwd()}/`)
   })
+
+  it('refuses a relative or empty homeDir rather than resolving it against process.cwd()', () => {
+    // Every one of these makes `path.resolve` start from the cwd, so without the
+    // isAbsolute guard the store would land inside whichever project is open.
+    for (const badHome of ['relative/home', '', '.', '..']) {
+      const label = `homeDir ${JSON.stringify(badHome)}`
+      let resolved: string | undefined
+      let thrown: unknown
+      try {
+        resolved = resolveDataRoot(configWithDataDir(undefined), {}, badHome)
+      } catch (error) {
+        thrown = error
+      }
+
+      if (thrown === undefined) {
+        // A cwd-free fallback would be acceptable; a cwd-derived one is not.
+        expect(resolved, label).not.toContain(process.cwd())
+      } else {
+        expect(thrown, label).toBeInstanceOf(Error)
+        expect((thrown as Error).message, label).toMatch(/absolute/)
+        expect((thrown as Error).message, label).toContain(JSON.stringify(badHome))
+      }
+    }
+  })
 })
 
 describe('writeFileAtomic', () => {

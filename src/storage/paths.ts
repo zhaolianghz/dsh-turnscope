@@ -26,6 +26,14 @@ const HOME_DIRNAME = '.dsh'
  * index would silently fragment and retention would never see the whole set.
  * The result is always absolute, so callers can open it without further
  * resolution.
+ *
+ * Every arm is guarded to keep that promise. `dataDir` and `DSH_HOME` are
+ * accepted only when absolute, and `homeDir` is required to be absolute —
+ * `resolve` would quietly start from the cwd for a relative or empty first
+ * segment, which is the one path by which the cwd could reach the result. A bad
+ * `homeDir` is therefore a caller bug, and failing loudly beats scattering the
+ * store; the call site wraps this in its fail-open boundary, so the outcome is
+ * a disabled recorder rather than data written to the wrong place.
  */
 export function resolveDataRoot(
   config: TurnscopeConfig,
@@ -40,8 +48,13 @@ export function resolveDataRoot(
     return join(dshHome, PLUGIN_DIRNAME)
   }
 
-  // `resolve` (not `join`) so a relative `homeDir` still yields an absolute
-  // path; an absolute first segment makes it independent of the cwd.
+  // A relative (or empty) homeDir would make `resolve` start from the cwd,
+  // which is the one thing this function is not allowed to do. Both a caller
+  // passing a relative path and a caller passing an unset HOME land here, and
+  // neither may silently produce a store under the user's current project.
+  if (!isAbsolute(homeDir)) {
+    throw new Error(`homeDir must be absolute, got ${JSON.stringify(homeDir)}`)
+  }
   return resolve(homeDir, HOME_DIRNAME, PLUGIN_DIRNAME)
 }
 
