@@ -1,10 +1,30 @@
 {
   "name": "@zhaolianghz/dsh-turnscope",
-  "version": "0.0.0",
+  "version": "0.1.0-dev.0",
   "private": true,
+  "description": "Turn-level safety inspection, change attribution, safe rewind, and isolated retry for DeepSeek Harness coding sessions.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhaolianghz/dsh-turnscope.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zhaolianghz/dsh-turnscope/issues"
+  },
+  "homepage": "https://github.com/zhaolianghz/dsh-turnscope#readme",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "turnscope",
+    "attribution",
+    "checkpoint",
+    "rewind"
+  ],
   "exports": {
     ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" },
     "./client": { "types": "./lib/types/client/index.d.ts", "default": "./lib/client.js" },
@@ -13,7 +33,6 @@
   },
   "files": [
     "lib",
-    "client",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
