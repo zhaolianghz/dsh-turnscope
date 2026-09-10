@@ -1,5 +1,16 @@
 # Host Trace Core Implementation Plan
 
+> ⚠️ **已废弃（superseded 2026-09-11）** —— Tasks 1–5 已提交并被保留（storage / redaction /
+> config / diagnostics / bundle 全部沿用）。Tasks 6–8 不再按本文件执行：
+>
+> - Task 6 的适配层已按原样落地并提交（`feat: record session turns through the host event firehose`），
+>   其领域模型将由 v0.2 计划重做。
+> - Task 7 的「record-only GitPort（零 blob）」被 v0.2 推翻：checkpoint 必须保存 relevant path
+>   的原始内容，否则 V0.2 的逆向 patch 与 V0.3 的 worktree 重建在字节层面不可能正确。
+> - Task 8 的 retention / diagnostics / README 被 v0.2 计划的 Phase B3 与 Phase H 吸收。
+>
+> 当前计划：`docs/superpowers/plans/2026-09-11-v0.1-turn-safety-inspector.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give Turnscope a real DSH host half that records every agent turn — activity events, redacted payloads, Git checkpoints — into a plugin-private local store, without ever blocking or modifying the user's workspace.

@@ -1,400 +1,1510 @@
-# dsh-turnscope 产品需求文档
+# dsh-turnscope 产品需求文档（PRD）
+
+> **产品定位：Turn-level Safety & Recovery for Agent Coding**
+>
+> **一句话：看清 Agent 每一轮修改，判断是否安全撤回；不安全时隔离重试。**
 
 | 字段 | 内容 |
-| --- | --- |
-| 文档版本 | 0.1 |
-| 状态 | 待评审 |
-| 日期 | 2026-08-28 |
-| 产品阶段 | 2–3 周精致 MVP |
-| 目标平台 | DeepSeek Harness Web，Git 代码工作区 |
+|---|---|
+| 文档版本 | v0.2 |
+| 状态 | 可进入开发评审 |
+| 调研基线 | 2026-09-10 |
+| 产品阶段 | V0.1 → V0.2 → V0.3 分阶段发布 |
+| 目标平台 | DeepSeek Harness Web |
+| 首要工作区 | Git 代码工作区 |
+| 产品形态 | 本地优先的 DSH 插件 |
+| 核心差异 | Turn Attribution + Safety Verdict + Recovery Orchestration |
+| 数据策略 | 默认本地、默认无遥测、写入前脱敏 |
+| 安全原则 | 无法证明安全时拒绝原地恢复 |
 
-## 1. 产品摘要
+---
 
-`dsh-turnscope` 是一个面向 DeepSeek Harness 编程用户的本地优先插件。它把每轮 Agent 工作组织成可理解的时间线，并将会话、工具活动和代码变化关联起来，使用户能够快速回答“Agent 刚才做了什么、哪里失败了、能否安全撤回、能否从这里重新尝试”。
+## 1. 文档说明
 
-产品的一句话承诺：
+本 PRD 是对原 `dsh-turnscope` 产品方向的重新收敛。
 
-> 让 Agent 的每一轮代码操作都可看懂、可安全回退、可隔离重试。
+原方案覆盖：
 
-首版不是插件开发器、通用可观测平台或 Agent 评测平台。它是安装在 DSH Web 中、直接服务日常编码过程的用户插件。
+- Turn Timeline；
+- 文件 Diff；
+- 失败诊断；
+- Checkpoint；
+- Rewind；
+- Git Worktree；
+- Session Fork；
+- Retry；
+- Trace / 导出等。
 
-## 2. 背景与问题
+这些能力单独看都有价值，但 DSH 插件生态中已经存在大量 Timeline、Diff、Checkpoint、Rewind、Replay、Trace、Worktree 类插件。若继续把这些能力平铺为同等权重，Turnscope 容易成为“已有插件功能的集合”，产品心智不够清晰。
 
-一次 Agent 对话轮次可能包含多次模型步骤、Shell 命令、工具调用、文件编辑和测试。DSH 已保存细粒度会话事件，但普通用户仍需要手动翻阅长对话、终端输出和 Git Diff 才能理解执行结果。
+因此本版本将产品核心重新定义为：
 
-核心问题包括：
+> **Turnscope 不是一个通用时间线，也不是另一个 Git Undo 插件。**
+>
+> **Turnscope 是 Agent 编码过程中的“轮次安全判断与恢复决策层”。**
 
-1. **变化不可见**：用户难以快速知道一轮中修改了哪些文件以及验证是否成功。
-2. **失败难定位**：真正的失败点可能埋在大量工具输出中。
-3. **撤回不安全**：直接使用 Git 重置可能覆盖用户原有改动或改变分支历史。
-4. **重试成本高**：用户想从跑偏前重新尝试，但又希望保留当前结果用于比较。
-5. **底层信息过载**：用户需要面向任务的解释，而不是 Cordis 服务、事件名称或原始 JSONL。
+用户真正要解决的问题不是“有没有 Undo 按钮”，而是：
 
-## 3. 目标用户
+1. 这一轮 Agent 到底改了什么？
+2. 哪些变化能够确定属于 Agent？
+3. 哪些变化在 Agent 开始之前就已经存在？
+4. 当前工作区后来是否又发生了变化？
+5. 现在原地撤回，会不会误伤用户自己的代码？
+6. 如果不能安全撤回，怎样从历史点重新尝试，同时保留当前成果？
 
-### 3.1 核心用户
+Turnscope 必须优先回答这些问题。
 
-使用 DSH Web 在 Git 项目中完成编码任务的个人开发者，包括：
+---
 
-- 让 Agent 实现功能或修复缺陷的开发者；
-- 使用 Agent 做重构、测试补全或依赖升级的维护者；
-- 同时比较多个实现路径、希望保留每条尝试结果的高级用户。
+# 2. 产品定义
 
-### 3.2 次要用户
+## 2.1 产品名称
 
-- 需要复现用户问题的 DSH 插件作者；
-- 需要审阅 Agent 操作记录的开源项目维护者。
+**dsh-turnscope**
 
-次要用户的需求不能迫使首版暴露复杂的 Cordis 内部结构。
+名称继续保留。
 
-## 4. 产品目标
+“Turnscope”天然表达：
 
-### 4.1 MVP 目标
+- Turn：Agent 的一轮任务；
+- Scope：观察这一轮的边界、影响范围和证据。
 
-1. 用户在 10 秒内理解最近一轮修改了什么、执行了什么、是否验证成功。
-2. 用户从异常提示进入相关命令、工具结果或文件 Diff 不超过两次点击。
-3. 在满足安全前置条件时，用户可以预览并撤回一轮的文件变化。
-4. 用户可以从历史轮次创建隔离工作区和关联的新会话，不影响原工作区。
-5. 插件异常时 DSH 主会话继续运行；可观测能力失败不能阻断 Agent。
+---
 
-### 4.2 非目标
+## 2.2 产品定位
 
-首版明确不包含：
+**English**
 
-- 通用 OpenTelemetry、日志聚合或云端可观测平台；
-- 完整 Benchmark、LLM Judge 或跨模型排行榜；
-- 自动修复失败代码或自动选择最佳模型；
-- 多人协作、云同步、账号体系和托管服务；
-- 非 Git 工作区的文件回退保证；
-- 对数据库、远程 API、消息发送等外部副作用进行确定性回放；
-- DSH 插件脚手架、插件市场或 Cordis 内部调试器。
+> Safety & Recovery for Agent Coding Turns.
 
-## 5. 核心概念
+**中文**
 
-### 5.1 轮次 Turn
+> Agent 编码轮次安全与恢复工具。
 
-从一条用户消息进入 Agent 队列开始，到该轮完成、失败或被中断为止。一个轮次可以包含多个模型步骤和工具调用。
+---
 
-### 5.2 活动 Activity
+## 2.3 产品价值主张
 
-轮次中的一个可观察动作，例如模型步骤、工具调用、Shell 命令、审批、测试结果、上下文压缩或错误。
+### 核心承诺
 
-### 5.3 检查点 Checkpoint
+> **See what changed. Know what is safe. Recover without losing good work.**
 
-轮次开始前或结束后记录的工作区状态描述。检查点用于计算变化、判断工作区是否漂移，以及准备回退或分叉。检查点不是用户分支上的 Git Commit。
+对应中文：
 
-### 5.4 安全回退 Rewind
+> **看清每一轮修改，判断风险，安全撤回，隔离重试。**
 
-以新的工作区变化抵消所选轮次产生的变化。安全回退不得重置分支、改写历史或覆盖检查点之后无法归属的修改。
+---
 
-### 5.5 分叉 Fork
+## 2.4 核心心智
 
-从某个检查点创建隔离 Git Worktree 和新的 DSH 会话。原会话、原工作区和当前实现保持不变。
+Turnscope 的产品心智不是：
 
-## 6. 核心用户流程
+- 时间线工具；
+- Git Diff 工具；
+- Undo 工具；
+- Agent 日志查看器；
+- 通用 Debug 平台。
 
-### 6.1 查看最近一轮
+而是：
 
-1. 用户在 DSH 会话标题区看到 Turnscope 状态入口。
-2. 点击后打开右侧面板，默认定位到最近一轮。
-3. 轮次卡片显示状态、耗时、命令数量、修改文件数量和验证结果。
-4. 用户点击文件或异常条目查看详情。
+> **Agent 改完代码以后，我能立即知道“这一轮是否安全”。**
 
-### 6.2 安全回退一轮
+每一个 Turn 最终都应得到一个可解释的安全结论。
 
-1. 用户选择一个支持回退的轮次并点击“预览回退”。
-2. 插件重新检查当前工作区是否与记录的轮次后状态一致。
-3. 插件展示将新增、恢复、删除或冲突的文件 Diff。
-4. 用户明确确认后，插件创建回退前检查点并应用逆向变化。
-5. 回退结果作为新的时间线活动记录，不删除原会话内容。
+---
 
-如果无法证明安全，插件必须拒绝原地回退，并解释具体原因；可用时提供“创建隔离分叉”作为替代。
+# 3. 市场与差异化
 
-### 6.3 从历史轮次分叉重试
+## 3.1 已存在的能力类型
 
-1. 用户选择一个轮次开始前的检查点并点击“分叉”。
-2. 插件显示将创建的隔离工作区位置、基线和磁盘占用预估。
-3. 插件创建 Worktree，并创建关联到父会话和父轮次的新 DSH 会话。
-4. 新会话打开但不自动调用模型，输入框预填可编辑的重试提示。
-5. 用户决定是否更换模型、调整提示词并开始执行。
+DSH 插件生态已经出现以下成熟方向：
 
-## 7. 功能需求
+- Session / Turn 时间线；
+- 单轮修改 Diff；
+- Checkpoint；
+- Git 快照；
+- Session Rewind；
+- 文件恢复；
+- Replay；
+- Trace 分析；
+- Git Worktree；
+- Session Fork；
+- Repro / 导出。
 
-优先级定义：P0 为 MVP 发布阻塞项；P1 为首版发布后优先增强项。
+因此 Turnscope 不把“有时间线”“有 Diff”“能回退”本身作为核心差异。
 
-### FR-01 安装与启用（P0）
+---
 
-- 以符合 DSH Bundle 约定的社区插件形式安装到 `web` Profile。
-- 首次启用不要求填写 API Key、创建账号或运行独立数据库。
-- 插件必须提供明确的兼容 DSH 版本范围和卸载说明。
-- 插件禁用后不得影响既有会话读取和 DSH 核心功能。
+## 3.2 Turnscope 的差异化
 
-验收标准：新用户按 README 操作后，可在一个现有 DSH 会话中打开 Turnscope 面板。
+Turnscope 重点建立三个连续能力：
 
-### FR-02 轮次与活动采集（P0）
+### A. Attribution —— 归属
 
-- 从 DSH 公开服务和事件中采集轮次边界、模型步骤、工具调用、工具结果、审批、错误、中断和压缩事件。
-- 采集器将上游事件转换为稳定的内部事件模型，UI 不直接依赖上游原始事件结构。
-- 活动必须保留时间、状态、耗时、所属轮次和父子关系。
-- 未识别的新事件必须安全忽略并记录诊断信息，不得导致会话失败。
+回答：
 
-验收标准：完成、失败和中断三种轮次都能形成完整且可关闭的时间线记录。
+> **这次变化到底是谁产生的？**
 
-### FR-03 轮次时间线（P0）
+变化划分为：
 
-- 在会话标题区提供状态入口，在桌面端打开右侧面板。
-- 时间线按轮次分组，轮次内按发生顺序展示活动。
-- 每个轮次卡片显示：状态、持续时间、工具/命令数、修改文件数、测试结果和异常数量。
-- 正在运行的活动实时更新；结束后保持稳定，可在会话重开后恢复。
-- 支持按“全部、文件、命令、测试、异常”过滤。
+- Agent Change；
+- Pre-existing User Change；
+- Post-turn Drift；
+- Uncertain Change；
+- External / Untracked Side Effect。
 
-验收标准：用户无需阅读原始聊天日志即可定位最近一次失败活动。
+---
 
-### FR-04 代码变化检查器（P0）
+### B. Safety —— 判断
 
-- 在每轮开始和结束时读取 Git 工作区状态，计算该轮的文件变化。
-- 展示新增、修改、删除、重命名和二进制文件变化。
-- 文本文件提供统一 Diff；超大文件显示摘要和明确的截断提示。
-- 将轮次开始前已经存在的用户改动标记为“基线改动”，不得归因给 Agent。
-- 当无法可靠区分并发用户编辑与 Agent 编辑时，必须显示“归属不确定”。
+回答：
 
-验收标准：在干净 Git 工作区中，轮次文件列表与 `git diff` 结果一致；已有改动不会被错误标记为该轮新增变化。
+> **现在执行 Rewind 是否安全？**
 
-### FR-05 检查点（P0）
+安全结论由确定性规则产生，而不是由 LLM 猜测。
 
-- 在支持的 Git 工作区中记录轮次前后检查点。
-- 检查点数据存放在插件自己的本地数据目录，不在用户分支创建 Commit 或 Tag。
-- 检查点至少包含仓库身份、HEAD、分支、索引/工作区摘要、相关文件内容指纹和时间。
-- 单个检查点创建失败时，轮次仍应继续，并将该轮标记为“不可回退”。
-- 已有未提交改动的工作区默认只提供观察能力；首版不允许原地回退。
+---
 
-验收标准：检查点创建不会改变 `HEAD`、当前分支、暂存区或工作树内容。
+### C. Recovery —— 恢复策略
 
-### FR-06 安全回退（P0）
+回答：
 
-- 仅当轮次前检查点有效、轮次开始时工作区干净且当前文件状态未发生额外漂移时启用原地回退。
-- 回退前必须展示逆向 Diff、影响文件和安全检查结果。
-- 用户必须明确确认；不提供自动回退设置。
-- 回退操作不得调用 `git reset --hard`、改写分支历史、删除未归属文件或静默解决冲突。
-- 回退执行前创建新的恢复检查点；回退失败时尽可能保持操作前状态，并显示可执行的恢复说明。
-- 回退作为新的活动追加到时间线，不删除原轮次记录。
+> **如果不安全，下一步应该怎么做？**
 
-验收标准：存在检查点后新增用户改动、文件内容不匹配或 Git 状态异常时，插件拒绝原地回退且不修改任何文件。
+输出明确 Recovery Plan：
 
-### FR-07 隔离分叉（P0）
+- Rewind Allowed；
+- Inspect First；
+- Fork Recommended；
+- Fork Only；
+- Recovery Unavailable。
 
-- 用户可从任一完整检查点创建隔离 Git Worktree。
-- Worktree 存放在插件管理的本地目录，不污染项目目录。
-- 新 DSH 会话保留父会话 ID、父轮次 ID 和检查点 ID 的关联。
-- 新会话包含截至分叉点的可用会话上下文，但不包含其后的对话。
-- 分叉完成后不自动调用模型；用户确认重试提示后才开始。
-- 提供列出和清理插件创建的 Worktree 的入口；清理前检查未提交改动并二次确认。
+---
 
-验收标准：分叉中的代码变化、Commit 和工具调用不会改变原工作区及其当前分支。
+## 3.3 核心护城河
 
-### FR-08 确定性问题提示（P0）
+Turnscope 的护城河不是某一个 Git 命令，而是：
 
-首版仅使用规则，不调用额外模型。至少支持：
+> **证据采集 → 变化归属 → 安全判定 → 恢复决策**
 
-- 工具或命令失败；
-- 工具或命令超时；
-- 相同规范化调用连续出现三次；
-- 文件发生变化后，后续验证命令失败；
-- 文件发生变化后未观察到测试、构建、类型检查或 Lint；
-- 轮次异常中断或达到输出限制。
+形成的完整可信链路。
 
-每个提示必须包含触发证据和严重程度。提示用于辅助判断，不得将启发式结果描述为确定根因。
+---
 
-验收标准：规则使用固定事件输入可重复产生相同结果，且不发送任何数据到外部服务。
+# 4. 目标用户
 
-### FR-09 本地存储与保留策略（P0）
+## 4.1 核心用户
 
-- Trace、检查点元数据和必要的 Diff 默认仅保存在本机。
-- 默认每个工作区最多保留 30 天或 100 MB，以先达到者为准，并使用最旧优先清理。
-- 正在被分叉引用或标记为保留的检查点不得自动删除。
-- 用户可按会话或工作区立即清除 Turnscope 数据。
-- 默认不收集产品遥测。
+使用 DSH Web 让 Agent 修改代码的个人开发者，包括：
 
-验收标准：达到保留上限时自动清理不会删除用户源码、Git 对象或非 Turnscope 创建的 Worktree。
+- 使用 Agent 开发功能；
+- 修复 Bug；
+- 重构代码；
+- 补测试；
+- 升级依赖；
+- 修改多个文件；
+- 尝试多种实现路线。
 
-### FR-10 隐私与敏感信息（P0）
+---
 
-- UI 默认折叠环境变量、凭据相关文件和疑似密钥内容。
-- Trace 不保存完整进程环境。
-- 命令输出按大小截断，并对常见 Token、API Key、Authorization Header 和私钥格式执行本地遮盖。
-- 所有遮盖都必须在写入持久化存储前完成。
-- 被遮盖内容不能通过搜索、导出或诊断日志恢复。
+## 4.2 高频用户场景
 
-验收标准：包含测试密钥的工具结果写入后，持久化文件中不存在该密钥明文。
+### 场景 1：Agent 改坏了代码
 
-### FR-11 设置与诊断（P0）
+用户发现：
 
-- 设置页提供总开关、保留期限、存储上限、忽略路径、异常规则开关和数据清理。
-- 提供只读诊断信息：插件版本、兼容性、存储位置、占用空间、采集状态和最近错误。
-- 任何设置错误必须回退到安全默认值。
+- 编译失败；
+- 测试失败；
+- 页面行为异常；
+- Agent 开始继续错误方向。
 
-### FR-12 复现报告（P1）
+用户需要快速找到：
 
-- 用户可以导出一个脱敏、只读的轮次报告，用于 GitHub Issue 或 Discussion。
-- 报告包含版本、时间线、异常证据、文件 Diff 和用户选择的命令输出。
-- 导出前提供内容预览和二次敏感信息扫描。
-- P1 仅支持阅读和分享，不承诺导入后自动执行。
+- 从哪一轮开始出错；
+- 这一轮改了哪些文件；
+- 能不能安全撤回。
 
-## 8. UI 信息架构
+---
 
-首版使用一个会话级右侧面板，避免替换聊天主界面。
+### 场景 2：用户自己也改了文件
 
-面板分为三层：
+Agent 工作之前，用户本地已经有未提交修改。
 
-1. **轮次列表**：状态、摘要、文件数量、验证结果和异常徽标。
-2. **轮次详情**：概览、变化、活动三个标签页。
-3. **操作区**：预览回退、创建分叉、复制诊断摘要。
+用户最担心的是：
 
-默认视图优先展示用户语言，不暴露内部事件名称。原始事件 JSON 仅在“诊断”折叠区提供。
+> 点击 Rewind 会不会把自己的代码一起覆盖？
 
-首版桌面优先；窄屏只要求功能可访问，不承诺完整移动端优化。
+Turnscope 必须明确区分：
 
-## 9. 安全规则
+- 原本存在的变化；
+- Agent 本轮新增的变化。
 
-以下规则优先级高于功能可用性：
+---
 
-1. 无法证明回退安全时必须拒绝修改。
-2. 插件不得自动提交、推送、变基或重置用户分支。
-3. 插件不得删除非自身创建的 Worktree、Git 引用或文件。
-4. 原工作区存在未提交改动时，首版禁止原地回退。
-5. 分叉和清理操作必须展示目标路径和影响范围。
-6. 插件异常必须 fail-open：失去记录能力可以接受，阻断 Agent 主任务不可以接受。
+### 场景 3：Agent 结束后用户继续编辑
 
-## 10. 非功能需求
+Agent Turn 完成后，用户手工继续修改同一个文件。
 
-### 10.1 性能
+此时历史 Turn 的逆向 Patch 可能会损坏后续工作。
 
-- 活动事件进入 UI 的本地可见延迟目标为 500 ms 以内。
-- 文件 Diff 和检查点计算应在后台执行，不阻塞模型流式输出和工具执行。
-- 单会话 1,000 条活动记录下，面板首次可交互时间目标为 2 秒以内。
-- 超过容量限制的输出和 Diff 必须截断或延迟加载，不允许造成页面无响应。
+Turnscope 应识别：
 
-### 10.2 可靠性
+> Workspace Drift
 
-- 插件重启后可从持久化 Trace 恢复已完成轮次。
-- 写入使用临时文件加原子替换，避免进程终止产生半写文件。
-- 上游事件新增或缺失字段时，采集器降级而不是崩溃。
+并阻止危险的原地 Rewind。
 
-### 10.3 兼容性
+---
 
-- 每个 Release 声明并测试明确的 DSH 版本范围。
-- 对 DSH 开发者预览期的破坏性变化采用适配层隔离，UI 和业务逻辑不直接依赖上游事件结构。
-- MVP 支持 macOS 和 Linux；Windows 在后续兼容验证通过后声明支持。
+### 场景 4：想重新试，但不想丢掉当前成果
 
-### 10.4 可访问性
+当前路线虽然失败，但里面可能有部分有用代码。
 
-- 状态不能只依赖颜色表达。
-- 时间线、标签页、Diff 和确认对话框支持键盘操作。
-- 重要操作提供清晰焦点和可读的无障碍名称。
+用户希望：
 
-## 11. 数据模型概要
+- 原工作区保持不动；
+- 从之前某一轮重新尝试；
+- 在隔离目录中执行；
+- 最后比较两条路线。
 
-首版内部模型至少包含：
+Turnscope 提供：
 
-- `WorkspaceRecord`：工作区身份、仓库根目录和保留策略；
-- `SessionTrace`：DSH 会话与 Turnscope 数据的关联；
-- `TurnRecord`：轮次边界、状态、摘要指标和检查点引用；
-- `ActivityRecord`：标准化活动、时间、父子关系、状态和脱敏载荷；
-- `CheckpointRecord`：Git/文件状态指纹、可回退性和存储引用；
-- `FindingRecord`：规则、严重程度、证据和关联活动；
-- `ForkRecord`：父会话、检查点、新会话和 Worktree 生命周期。
+> Fork & Retry
 
-内部模型需要显式版本号。旧数据不兼容时必须提供清理或迁移提示，不能导致 DSH 无法启动。
+---
 
-## 12. 成功指标
+# 5. 产品目标
 
-MVP 发布验收指标：
+## 5.1 产品北极星
 
-1. 首次安装到看到第一条轮次记录不超过 5 分钟。
-2. 在用户测试中，查看最近一轮修改内容的中位耗时不超过 10 秒。
-3. 用户选中轮次后，两次点击内可进入回退预览或分叉确认。
-4. 工具失败、超时、重复调用、验证失败四类固定场景全部能生成正确提示。
-5. 安全回退冲突测试中不得出现用户数据丢失或分支历史改写。
-6. 故意让 Turnscope 存储失败时，DSH 主轮次仍能完成。
+> **让用户在 Agent 一轮完成后，不需要自行拼接 Chat、Terminal 和 Git 信息，就能判断本轮影响和下一步安全动作。**
 
-社区发布后的观察指标不内置遥测，通过 GitHub 获取：安装问题数量、可复现缺陷比例、外部贡献者数量和版本兼容反馈。
+---
 
-## 13. MVP 发布范围
+## 5.2 V0.1 目标
 
-### 必须发布
+**Turn Safety Inspector**
 
-- DSH Web Bundle 安装；
-- 事件适配与本地 Trace 存储；
-- 轮次时间线与详情面板；
-- Git 变化检查器；
-- 检查点和安全回退；
-- 隔离 Worktree 分叉；
-- 六类确定性问题提示；
-- 设置、清理、诊断和用户文档。
+用户在 10 秒内完成：
 
-### 发布后增强
+1. 找到最近 Turn；
+2. 看清 Agent 做了什么；
+3. 看清文件影响；
+4. 看清测试 / 命令状态；
+5. 获取 Safety Verdict；
+6. 理解 Verdict 的证据。
 
-- 脱敏复现报告；
-- Windows 支持；
-- 非 Git 工作区的快照能力；
-- 两个分叉结果的并排比较；
-- 可选的 OpenTelemetry 导出；
-- 面向插件作者的原始 Cordis 事件检查模式。
+V0.1 **只读优先**。
 
-## 14. 里程碑
+---
 
-### 第 1 周：记录与看懂
+## 5.3 V0.2 目标
 
-- 确定 DSH 兼容版本和公开扩展面；
-- 完成事件适配层、内部模型和本地存储；
-- 完成轮次时间线、活动详情和 Git Diff 原型；
-- 建立错误隔离、脱敏和固定事件测试。
+**Safe Rewind**
 
-### 第 2 周：安全回退与分叉
+只有在安全条件全部通过时允许：
 
-- 完成检查点、安全前置条件和回退预览；
-- 完成逆向变化应用、失败恢复和审计活动；
-- 完成隔离 Worktree、新会话关联和清理流程；
-- 覆盖脏工作区、漂移、冲突和大文件场景。
+> Preview Rewind → Confirm → Apply
 
-### 第 3 周：产品化与发布
+任何关键条件无法证明时：
 
-- 完成问题提示、设置页、诊断页和保留策略；
-- 优化性能、键盘可访问性和空/错/加载状态；
-- 完成安装、升级、卸载、安全和兼容文档；
-- 在受支持 DSH 版本和操作系统上执行发布验收。
+> Block Rewind
 
-## 15. 主要风险与缓解
+---
 
-| 风险 | 影响 | 缓解策略 |
-| --- | --- | --- |
-| DSH 开发者预览期接口变化 | 插件快速失效 | 单独事件适配层、版本范围、兼容测试矩阵 |
-| 回退覆盖用户改动 | 严重数据损失 | 干净工作区前置条件、内容指纹、预览、冲突即拒绝 |
-| Git Worktree 边界复杂 | 分叉或清理失败 | 只管理自建目录、状态检查、禁止强制清理 |
-| Trace 含敏感信息 | 隐私泄露 | 写入前遮盖、默认折叠、无遥测、P1 导出二次扫描 |
-| 大仓库 Diff 性能差 | 影响 Agent 主流程 | 后台计算、容量上限、截断、延迟加载 |
-| 功能过度膨胀 | 无法在 2–3 周发布 | 坚持 P0 范围，评测、云端、非 Git 回退全部后置 |
+## 5.4 V0.3 目标
 
-## 16. 发布门槛
+**Isolated Retry**
 
-只有同时满足以下条件才可发布 MVP：
+对于不适合原地 Rewind 的 Turn：
 
-- 所有 P0 需求具有自动化或可重复的验收证据；
-- 数据丢失、分支改写和明文密钥持久化测试全部通过；
-- 插件故障不阻断 DSH Agent 的验证通过；
-- 安装、升级、禁用、卸载和 Worktree 清理文档完整；
-- README 明确标注支持版本、平台限制和开发者预览风险。
+> Fork from checkpoint → Isolated Worktree → New DSH Session → Retry → Compare
 
-## 17. 已确定的产品决策
+---
 
-以下事项不再作为 MVP 开放问题：
+# 6. 非目标
 
-- 面向 DSH 编程用户，而非仅面向插件作者；
-- 采用会话右侧面板，不替换聊天主界面；
-- Git 工作区优先，非 Git 首版不提供回退保证；
-- 回退采用预览和明确确认，不提供自动模式；
-- 脏工作区仅观察，不做原地回退；
-- 分叉使用隔离 Worktree，新会话不会自动启动模型；
-- 异常识别使用确定性规则，不消耗额外模型 Token；
-- 本地优先，默认无遥测；
-- P0 不包含云服务、团队功能、完整评测或自动修复。
+以下能力不作为 V0.x 核心目标：
+
+- 通用 Agent Observability 平台；
+- OpenTelemetry 后端；
+- 云端 Trace 平台；
+- Agent Benchmark；
+- 模型排行榜；
+- LLM Judge；
+- 自动选择模型；
+- 自动修改 Prompt；
+- 自动修复所有失败；
+- 通用 Git GUI；
+- 通用 Worktree Manager；
+- 非 Git 文件系统的强一致恢复；
+- 数据库事务回滚；
+- 网络 API 副作用回滚；
+- 邮件 / 消息撤回；
+- 云端多人协作；
+- 团队账号权限系统。
+
+---
+
+# 7. 核心概念
+
+## 7.1 Turn
+
+从一条用户请求进入 Agent 执行开始，到该轮：
+
+- completed；
+- failed；
+- interrupted；
+- cancelled；
+- output-limited；
+
+之一结束。
+
+---
+
+## 7.2 Activity
+
+Turn 内发生的动作：
+
+- Model Step；
+- Tool Call；
+- Shell Command；
+- File Write；
+- File Edit；
+- Test；
+- Approval；
+- Error；
+- Context / Compaction；
+- System Event。
+
+---
+
+## 7.3 Turn Evidence
+
+用于证明该 Turn 发生过什么的事实集合，包括：
+
+- Turn 起止时间；
+- 工具调用；
+- 命令；
+- 修改路径；
+- Git pre-state；
+- Git post-state；
+- 文件内容指纹；
+- 测试结果；
+- 错误；
+- 当前工作区状态。
+
+---
+
+## 7.4 Change Attribution
+
+对文件变化进行归属。
+
+### AGENT
+
+能够较高可信度证明由本轮 Agent 产生。
+
+### BASELINE
+
+Turn 开始之前已经存在。
+
+### DRIFT
+
+Turn 完成之后才出现。
+
+### UNCERTAIN
+
+无法证明归属。
+
+---
+
+## 7.5 Checkpoint
+
+Checkpoint 是 Turnscope 用来判断状态的本地记录。
+
+Checkpoint **不是**用户分支上的提交。
+
+至少记录：
+
+- Repository Identity；
+- HEAD OID；
+- Branch；
+- Index 状态；
+- Worktree 状态；
+- Relevant File Fingerprints；
+- Timestamp；
+- Checkpoint Completeness。
+
+---
+
+## 7.6 Safety Verdict
+
+每个 Turn 都应得到一个安全结论。
+
+V0.x 使用四级模型：
+
+### SAFE
+
+满足自动恢复安全要求。
+
+UI：
+
+> Safe to rewind
+
+---
+
+### CAUTION
+
+没有发现确定冲突，但存在需要用户确认的问题。
+
+UI：
+
+> Inspect before recovery
+
+---
+
+### FORK_ONLY
+
+无法证明原地恢复安全，但具备隔离 Fork 条件。
+
+UI：
+
+> Rewind blocked · Fork recommended
+
+---
+
+### UNPROTECTED
+
+证据不足，无法提供可靠恢复。
+
+UI：
+
+> Recovery unavailable
+
+---
+
+# 8. Safety Verdict 判定原则
+
+## 8.1 SAFE 必须满足
+
+至少满足：
+
+- pre-checkpoint 完整；
+- post-checkpoint 完整；
+- Repository Identity 未变化；
+- 当前 HEAD 与安全预期兼容；
+- 目标文件不存在 Turn 后漂移；
+- 不存在未归属的目标文件变化；
+- 不处于 unresolved merge；
+- 不处于 unresolved rebase；
+- inverse patch 可 dry-run；
+- 不需要执行 `git reset --hard`；
+- 不需要改写用户分支历史。
+
+---
+
+## 8.2 CAUTION 示例
+
+- 检测到非目标文件发生变化；
+- 某些大文件仅保存 hash，没有完整 diff；
+- 二进制文件发生变化；
+- 工作区状态复杂但不直接影响本次目标文件；
+- 测试状态未知。
+
+CAUTION 默认不直接执行恢复。
+
+---
+
+## 8.3 FORK_ONLY 示例
+
+- Turn 后目标文件被再次编辑；
+- 当前 HEAD 已变化；
+- 相同文件同时包含无法可靠归属的修改；
+- reverse patch 无法 clean apply；
+- 当前存在 merge / rebase 风险；
+- 用户本地变化与 Agent Change 交叉。
+
+---
+
+## 8.4 UNPROTECTED 示例
+
+- Turn 开始时没有建立有效 checkpoint；
+- Git Repository Identity 无法确认；
+- 关键文件没有足够证据；
+- 数据已被清理；
+- 非 Git Workspace；
+- Turnscope 在关键采集阶段失效。
+
+---
+
+# 9. 核心产品流程
+
+## 9.1 Flow A：查看 Turn
+
+```text
+Agent 完成一轮
+      ↓
+Turnscope 聚合活动
+      ↓
+计算 Change Attribution
+      ↓
+运行 Safety Engine
+      ↓
+生成 Turn Card
+      ↓
+用户查看：
+What Changed / Evidence / Safety / Next Action
+```
+
+---
+
+## 9.2 Flow B：Safe Rewind
+
+```text
+用户选择历史 Turn
+      ↓
+点击 Preview Rewind
+      ↓
+重新获取当前 Workspace State
+      ↓
+重新运行 Safety Engine
+      ↓
+SAFE ?
+ ┌────┴────┐
+ YES       NO
+ ↓          ↓
+显示逆向Diff   禁止Rewind
+ ↓          ↓
+用户确认      推荐Inspect/Fork
+ ↓
+Apply
+ ↓
+建立Recovery Record
+```
+
+---
+
+## 9.3 Flow C：Fork & Retry
+
+```text
+选择历史 Turn / Checkpoint
+      ↓
+Create Fork
+      ↓
+创建隔离 Git Worktree
+      ↓
+创建关联 DSH Session
+      ↓
+预填 Retry Context
+      ↓
+用户修改 Prompt
+      ↓
+运行新的 Agent Turn
+      ↓
+Compare original vs retry
+```
+
+---
+
+# 10. 信息架构
+
+Turnscope 在 DSH 会话中提供独立 Conversation View。
+
+建议一级结构：
+
+```text
+Turnscope
+├── Turns
+├── Turn Detail
+│   ├── Summary
+│   ├── Changes
+│   ├── Commands
+│   ├── Tests
+│   ├── Evidence
+│   └── Recovery
+└── Settings
+```
+
+V0.1 不建议增加大量一级菜单。
+
+---
+
+# 11. Turn Card 设计
+
+每轮默认展示：
+
+```text
+Turn #18                                  FAILED
+
+Fix authentication timeout
+
+Duration       1m 42s
+Tools          9
+Commands       4
+Files          7
+Tests          1 failed
+
+Safety
+FORK ONLY
+
+Reason
+• src/auth.ts changed again after this turn
+• package-lock.json attribution is uncertain
+
+Recommended
+[Inspect changes] [Fork & Retry]
+```
+
+---
+
+## 11.1 卡片必须回答四件事
+
+### 发生了什么
+
+- 状态；
+- 时间；
+- 工具；
+- 命令。
+
+### 改了什么
+
+- 文件；
+- 类型；
+- Diff。
+
+### 哪里有问题
+
+- 测试；
+- 错误；
+- 失败 Activity。
+
+### 现在怎么办
+
+- SAFE；
+- CAUTION；
+- FORK_ONLY；
+- UNPROTECTED；
+- 推荐动作。
+
+---
+
+# 12. 功能需求
+
+---
+
+## FR-01 DSH 安装与插件发布（P0）
+
+### 要求
+
+- 以 DSH Bundle 形式发布；
+- `package.json` 必须声明 `dsh.bundle`；
+- Bundle 包含 `cordis.patch.yml`；
+- 支持通过 `dsh plugin --profile web add <package>` 安装；
+- GitHub Repository 添加 `dsh-plugin` topic；
+- README 给出明确兼容版本；
+- README 给出开发安装和正式安装两种方式；
+- 插件禁用不能影响 DSH 核心会话。
+
+### 当前项目差距
+
+当前仓库：
+
+- `version = 0.0.0`；
+- `private = true`；
+- 当前只有 `dsh.client`；
+- 尚未形成可公开安装的 `dsh.bundle`。
+
+### 验收
+
+用户安装后无需手工编辑 DSH 源码即可启用 Turnscope。
+
+---
+
+## FR-02 DSH 版本兼容层（P0）
+
+DSH 仍处于 Developer Preview，存在兼容性破坏风险。
+
+要求：
+
+- 所有 DSH 上游 API 通过 Adapter 层接入；
+- Domain Model 不直接引用上游 Event 类型；
+- UI 不直接解析上游 Session 原始结构；
+- 至少维护：
+  - 当前开发基线；
+  - 当前发布支持版本；
+- CI 对支持版本进行 Build / Typecheck / Boot Smoke Test；
+- 不使用无限宽泛 peerDependency 范围宣称未验证兼容。
+
+验收：
+
+> 上游字段变化时，主要修改集中在 Adapter 层。
+
+---
+
+## FR-03 Turn 采集（P0）
+
+采集：
+
+- Turn start；
+- Turn end；
+- Turn status；
+- Model activities；
+- Tools；
+- Commands；
+- Failures；
+- Interruptions；
+- Test-like commands；
+- File-related activities。
+
+要求：
+
+- 未识别事件安全忽略；
+- Turnscope 异常不得中断 Agent；
+- 支持迟到事件；
+- 支持 Session 重开后的重建。
+
+---
+
+## FR-04 Turn Timeline（P0）
+
+V0.1 保留当前已实现的 native `conversation.view` 模式。
+
+要求：
+
+- newest-first；
+- Running 实时更新；
+- Completed 稳定；
+- Failed 突出；
+- 显示：
+  - duration；
+  - tools；
+  - commands；
+  - files；
+  - tests；
+  - errors；
+  - Safety Verdict。
+
+Timeline 是入口，不是核心卖点。
+
+---
+
+## FR-05 Workspace Baseline（P0）
+
+Turn 开始时记录工作区基线：
+
+- repo identity；
+- HEAD；
+- branch；
+- staged state；
+- unstaged state；
+- untracked path list；
+- relevant file fingerprint。
+
+Turn 开始之前已存在的变化：
+
+> BASELINE
+
+不得默认归因给 Agent。
+
+---
+
+## FR-06 Turn ChangeSet（P0）
+
+Turn 结束后计算：
+
+- created；
+- modified；
+- deleted；
+- renamed；
+- binary changed。
+
+每个文件必须拥有 Attribution：
+
+- AGENT；
+- BASELINE；
+- DRIFT；
+- UNCERTAIN。
+
+---
+
+## FR-07 Diff Viewer（P0）
+
+支持：
+
+- Unified Diff；
+- Added / Modified / Deleted；
+- 基础 rename；
+- 大文件截断；
+- Binary metadata；
+- Copy path；
+- 跳转到相关 Activity（可用时）。
+
+---
+
+## FR-08 Test / Command Summary（P0）
+
+识别常见验证行为：
+
+- test；
+- typecheck；
+- lint；
+- build；
+- compile。
+
+每条输出：
+
+- command；
+- exit status；
+- duration；
+- result；
+- evidence。
+
+不需要在 V0.1 做复杂根因分析。
+
+---
+
+## FR-09 Safety Engine（P0）
+
+Safety Engine 为产品核心。
+
+输入：
+
+- pre checkpoint；
+- post checkpoint；
+- Turn ChangeSet；
+- current workspace；
+- repo state；
+- attribution confidence；
+- dry-run result。
+
+输出：
+
+```text
+SafetyVerdict {
+  level
+  reasons[]
+  evidenceRefs[]
+  allowedActions[]
+  recommendedAction
+  evaluatedAt
+}
+```
+
+要求：
+
+- 确定性；
+- 可解释；
+- 同样输入必须产生同样结果；
+- LLM 不参与 P0 Safety 决策。
+
+---
+
+## FR-10 Safety Reasons（P0）
+
+不能只显示：
+
+> Unsafe
+
+必须显示具体原因。
+
+例如：
+
+```text
+Rewind blocked
+
+1. src/auth.ts changed after Turn #18
+2. package-lock.json has uncertain attribution
+3. reverse patch does not apply cleanly
+
+Recommended: Fork & Retry
+```
+
+---
+
+## FR-11 Recovery Action Model（P0）
+
+不同 Verdict 对应不同按钮。
+
+| Verdict | Inspect | Rewind | Fork |
+|---|---:|---:|---:|
+| SAFE | ✓ | ✓ | ✓ |
+| CAUTION | ✓ | 默认关闭 | ✓ |
+| FORK_ONLY | ✓ | ✗ | ✓ |
+| UNPROTECTED | ✓ | ✗ | 视 checkpoint 而定 |
+
+禁止出现“按钮可点，但点击后才告诉用户危险”的模式。
+
+---
+
+## FR-12 Preview Rewind（V0.2 / P0）
+
+执行恢复前必须展示：
+
+- 目标 Turn；
+- affected files；
+- reverse changes；
+- conflicts；
+- safety checks；
+- 当前 Workspace State；
+- 执行后预期状态。
+
+Preview 不产生工作区修改。
+
+---
+
+## FR-13 Safe Rewind（V0.2 / P0）
+
+仅 SAFE 可执行。
+
+原则：
+
+- 不执行 `git reset --hard`；
+- 不移动用户分支到历史提交；
+- 不删除历史会话；
+- 不静默覆盖漂移文件；
+- 不改写 Git history；
+- 恢复本身记录为新的 Recovery Event。
+
+---
+
+## FR-14 Fork & Retry（V0.3 / P0）
+
+输入：
+
+- source session；
+- source turn；
+- source checkpoint。
+
+输出：
+
+- isolated worktree；
+- child session；
+- parent-child linkage；
+- retry context。
+
+要求：
+
+- 原工作区不变；
+- 原 session 不变；
+- 新 session 默认不自动执行模型；
+- 用户最终确认 Prompt 后开始执行。
+
+---
+
+## FR-15 Compare Retry（V0.3 / P1）
+
+对比：
+
+- original Turn；
+- retry Turn。
+
+维度：
+
+- status；
+- duration；
+- changed files；
+- test result；
+- commands；
+- safety verdict；
+- final diff summary。
+
+不做 LLM Judge。
+
+---
+
+## FR-16 Findings（P1）
+
+V0.1 只做极少数确定性提示：
+
+- command failed；
+- test failed；
+- changed but not validated；
+- repeated failed command；
+- interrupted after changes；
+- output limit after changes。
+
+Finding 不宣称“根因”。
+
+---
+
+## FR-17 本地存储（P0）
+
+默认：
+
+- Local only；
+- No account；
+- No cloud；
+- No telemetry。
+
+用户可：
+
+- 查看占用；
+- 清理历史；
+- 设置保留期；
+- 设置最大容量。
+
+---
+
+## FR-18 脱敏（P0）
+
+持久化前处理：
+
+- API key；
+- bearer token；
+- authorization header；
+- private key；
+- 常见 secret pattern；
+- 用户自定义敏感路径。
+
+不保存完整环境变量快照。
+
+---
+
+## FR-19 Fail-open（P0）
+
+Turnscope 的错误不得中断 Agent。
+
+例如：
+
+- checkpoint 失败；
+- SQLite 写失败；
+- diff 失败；
+- Git observer 失败。
+
+处理：
+
+- Turn 保持继续；
+- 标记 `UNPROTECTED`；
+- 记录插件内部诊断。
+
+---
+
+# 13. Safety Engine 产品规则矩阵
+
+| 条件 | SAFE | CAUTION | FORK_ONLY | UNPROTECTED |
+|---|---:|---:|---:|---:|
+| pre/post checkpoint 完整 | 必须 | 建议 | 建议 | 缺失时可能 |
+| repo identity 一致 | 必须 |  |  | 不一致 |
+| 当前 HEAD 兼容 | 必须 |  | 不兼容 | 无法读取 |
+| 目标文件无 post-turn drift | 必须 |  | 有 drift | 无证据 |
+| 所有目标变化可归属 | 必须 | 部分不确定 | 关键变化不确定 | 大量缺失 |
+| reverse patch dry-run 成功 | 必须 |  | 失败 | 无材料 |
+| merge/rebase clean | 必须 |  | 非 clean | 无法判断 |
+| Git workspace | 必须 | 必须 | 必须 | 非 Git |
+
+说明：
+
+> 最终 Verdict 取所有命中规则中最严格级别。
+
+---
+
+# 14. UX 原则
+
+## 14.1 安全信息优先于日志
+
+首屏优先显示：
+
+1. Turn Status；
+2. Safety；
+3. Changed Files；
+4. Tests；
+5. Recommended Action。
+
+原始事件放后面。
+
+---
+
+## 14.2 不使用模糊安全表达
+
+禁止：
+
+- Probably safe；
+- Should be okay；
+- Maybe safe。
+
+使用：
+
+- Safe to rewind；
+- Rewind blocked；
+- Evidence incomplete；
+- Workspace changed；
+- Fork recommended。
+
+---
+
+## 14.3 危险动作必须 Preview
+
+任何写 Workspace 的动作：
+
+> Preview first
+
+---
+
+## 14.4 不用红色表示普通失败以外的一切
+
+Safety 状态必须依靠：
+
+- 文字；
+- icon；
+- label；
+
+不能只依赖颜色。
+
+---
+
+# 15. V0.1 详细范围
+
+## 必须做
+
+- DSH bundle 化；
+- 兼容适配层；
+- Turn timeline；
+- commands；
+- tests；
+- changed files；
+- baseline detection；
+- change attribution；
+- diff；
+- checkpoints metadata；
+- Safety Engine；
+- Safety Verdict UI；
+- local persistence；
+- redaction；
+- fail-open；
+- cleanup settings。
+
+---
+
+## 明确不做
+
+- 真正 Rewind 写操作；
+- Worktree 自动创建；
+- Retry 自动创建 Session；
+- Run comparison；
+- 大量 Rule Engine；
+- AI 根因分析；
+- Trace export；
+- Repro bundle；
+- 非 Git snapshot engine。
+
+---
+
+# 16. V0.2 详细范围
+
+新增：
+
+- Preview Rewind；
+- Re-evaluate Safety；
+- reverse patch planner；
+- dry-run；
+- confirm；
+- apply；
+- recovery record；
+- recovery result；
+- failure rollback / fail-safe。
+
+---
+
+# 17. V0.3 详细范围
+
+新增：
+
+- Worktree Fork；
+- DSH child session；
+- lineage；
+- Retry prompt；
+- Compare；
+- cleanup worktree。
+
+---
+
+# 18. 发布节奏
+
+```text
+V0.1
+Turn Safety Inspector
+        ↓
+验证用户是否在意“安全判断”
+        ↓
+V0.2
+Safe Rewind
+        ↓
+验证恢复使用率和安全失败率
+        ↓
+V0.3
+Fork & Retry
+        ↓
+形成完整 Recovery Loop
+```
+
+---
+
+# 19. 成功指标
+
+## 19.1 产品指标
+
+### Activation
+
+用户安装后 10 分钟内至少打开一次 Turnscope。
+
+### Turn Inspection Rate
+
+出现 failed Turn 后打开 Turnscope 的比例。
+
+### Safety View Rate
+
+打开 Turn Detail 后查看 Safety / Reasons 的比例。
+
+### Recovery Intent
+
+V0.2：
+
+- Preview Rewind 点击率；
+- Rewind blocked 次数。
+
+V0.3：
+
+- Fork & Retry 启动率。
+
+---
+
+## 19.2 安全指标
+
+必须重点监控：
+
+- 错误归属用户修改为 Agent 修改：**0 容忍目标**；
+- 在已有 drift 时错误允许 SAFE：**0 容忍目标**；
+- Rewind 导致用户未关联修改丢失：**0 容忍目标**；
+- Turnscope 导致 DSH Agent 主任务失败：**0 容忍目标**。
+
+---
+
+# 20. 性能指标
+
+V0.1 目标：
+
+- Timeline 首屏打开：P95 < 500ms（本地已有索引）；
+- Turn detail：P95 < 300ms；
+- 1000 Turn session 仍支持分页；
+- Safety Evaluate：典型项目 < 1s；
+- 后台采集不得显著影响 Agent 命令执行。
+
+大型仓库可异步延迟计算完整 diff，但 Safety 所需关键状态必须明确标记是否完成。
+
+---
+
+# 21. 兼容性策略
+
+当前 `dsh-turnscope` 仓库开发版固定在 DSH `0.1.1-rc.2`。
+
+由于 DSH 官方仍明确处于 Developer Preview，并提示会发生兼容性破坏：
+
+- PRD 不永久锁死某一个 DSH 版本；
+- Release 必须公布 Verified Versions；
+- 每次 DSH 大版本 / RC train 变化都跑兼容测试；
+- `conversation.view` 等 UI 接口统一封装；
+- Host / Client API 均经过 Adapter。
+
+---
+
+# 22. 隐私与安全
+
+## 默认策略
+
+- 无遥测；
+- 不上传代码；
+- 不上传 Diff；
+- 不上传 Prompt；
+- 不上传命令输出；
+- 不建立云账号。
+
+---
+
+## 数据目录
+
+只存：
+
+- 本地 metadata；
+- 必要 diff；
+- 必要 checkpoint material；
+- 脱敏后的有限活动 payload。
+
+---
+
+## 外部副作用
+
+Turnscope 只能告诉用户某 Turn 调用了：
+
+- network；
+- database；
+- external command；
+- deployment；
+- message API；
+
+但不得宣称能够把这些副作用回滚。
+
+UI 显示：
+
+> External effects are not rewindable by Turnscope.
+
+---
+
+# 23. 错误处理
+
+错误分三类：
+
+## Observation Error
+
+例如 Git status 读取失败。
+
+结果：
+
+> Turn 仍存在，Safety = UNPROTECTED。
+
+---
+
+## Analysis Error
+
+例如 diff parser 失败。
+
+结果：
+
+> 保留原始安全证据，关闭自动恢复。
+
+---
+
+## Recovery Error
+
+V0.2。
+
+原则：
+
+- Recovery 前先建立 recovery-before checkpoint；
+- 写入逐步验证；
+- 任一步不确定时停止；
+- 不执行危险 fallback。
+
+---
+
+# 24. 首次发布验收标准
+
+V0.1 达到以下条件才允许公开发布：
+
+- [ ] 能作为 DSH Bundle 安装；
+- [ ] GitHub 添加 `dsh-plugin` topic；
+- [ ] npm package 非 private；
+- [ ] 有正式 semver；
+- [ ] README 有 install / uninstall；
+- [ ] README 有兼容矩阵；
+- [ ] 已验证至少一个当前 DSH 版本；
+- [ ] native `conversation.view` 可正常打开；
+- [ ] Turn 状态正确；
+- [ ] Changed Files 基本正确；
+- [ ] Baseline 不被误归因；
+- [ ] Drift 能被识别；
+- [ ] Safety Verdict 可解释；
+- [ ] unsafe case 不显示 Rewind 可执行；
+- [ ] 插件异常不阻断 Agent；
+- [ ] Secret redaction 有测试；
+- [ ] 100+ Turn session 无明显性能问题；
+- [ ] npm pack 后安装验证通过。
+
+---
+
+# 25. V0.1 Demo 脚本
+
+公开发布时 README 首页建议使用一个非常具体的 Demo。
+
+```text
+1. 用户本地 README.md 已有未提交修改
+2. Agent Turn #12 修改 src/auth.ts 和 tests/auth.test.ts
+3. 测试失败
+4. 用户随后手工修改 src/auth.ts
+5. 打开 Turnscope
+6. Turn #12 显示 FAILED
+7. Change Attribution：
+   - README.md = BASELINE
+   - src/auth.ts = AGENT + POST-TURN DRIFT
+   - tests/auth.test.ts = AGENT
+8. Safety = FORK ONLY
+9. Reason：
+   src/auth.ts changed after Turn #12
+10. Recommended Action：
+   Fork & Retry
+```
+
+这个 Demo 直接体现：
+
+> **Turnscope 不只是能 Undo，而是知道什么时候不应该 Undo。**
+
+---
+
+# 26. 后续路线
+
+## V0.4+
+
+只有在 V0.1～V0.3 已证明价值后再考虑：
+
+- Recovery comparison enhancement；
+- shareable sanitized report；
+- cross-session safety history；
+- optional AI explanation；
+- external side-effect warnings；
+- plugin API；
+- team policies。
+
+---
+
+# 27. 产品最终定义
+
+Turnscope 应始终遵守下面这一条：
+
+> **当证据不足时，宁可少做，也不能假装安全。**
+
+最终用户体验不是：
+
+> “这里有一个 Undo 按钮。”
+
+而是：
+
+```text
+Turn #18
+
+What changed?
+→ 7 files
+
+What failed?
+→ npm test
+
+Whose changes?
+→ 5 Agent / 1 baseline / 1 uncertain
+
+Is rewind safe?
+→ NO
+
+Why?
+→ Workspace drift detected
+
+What should I do?
+→ Fork & Retry
+```
+
+这就是 Turnscope 的产品核心。
+
+---
+
+# 28. 参考基线
+
+本 PRD 重写时参考：
+
+- `zhaolianghz/dsh-turnscope` 当前 README、PRD、ARCHITECTURE 与 package.json；
+- DeepSeek Harness 官方 Architecture / Plugin Publish 文档；
+- DSH `conversation.view` 当前公开 contract；
+- awesome-dsh-plugin 收录要求；
+- DSH 社区中 Timeline / Rewind / Checkpoint / Diff / Replay / Worktree / Trace 类型插件的市场重叠情况。
+
+相关公开资料：
+
+- https://github.com/zhaolianghz/dsh-turnscope
+- https://github.com/deepseek-ai/deepseek-harness
+- https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish
+- https://github.com/awesome-dsh-plugin/awesome-dsh-plugin

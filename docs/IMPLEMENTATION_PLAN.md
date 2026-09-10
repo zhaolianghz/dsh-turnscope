@@ -1,9 +1,18 @@
 # dsh-turnscope 开发实施计划
 
+> ⚠️ **已废弃（superseded）** —— 本文件描述的是 v0.1 的「record-only trace」方向，已被
+> v0.2 取代（见 `docs/PRD.md` 与 `docs/ARCHITECTURE.md`）。当前执行中的计划是
+> `docs/superpowers/plans/2026-09-11-v0.1-turn-safety-inspector.md`。
+>
+> 具体被推翻的前提：产品核心从「记录」改为「证据采集 → 变化归属 → 安全判定 → 恢复决策」；
+> Checkpoint 必须保存 relevant path 的原始内容（否则 V0.2/V0.3 的字节级恢复不可能）；
+> 脱敏边界改为诊断负载脱敏、recovery blob 原字节（v0.2 §12.3 / 决策 6）。
+> 保留本文仅作历史记录。
+
 | 字段 | 内容 |
 | --- | --- |
 | 文档版本 | 0.1 |
-| 状态 | 待执行 |
+| 状态 | 已废弃 |
 | 周期 | 2–3 周 |
 | 依据 | `docs/PRD.md`、`docs/ARCHITECTURE.md` |
 
