@@ -122,6 +122,49 @@ describe('redact: positives', () => {
     expectSecretRemoved(ASSIGNED_VALUE, 'assignment', `session_token: ${ASSIGNED_VALUE}`)
   })
 
+  // A JSON key's closing quote sits between the name and the separator, and a
+  // quoted key is the most likely way a credential reaches a trace at all.
+  it.each([
+    ['{"password":"correct-horse-battery"}', 'correct-horse-battery'],
+    ['{"api_key":"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'],
+    ['  "token": "abcdefgh12345678"', 'abcdefgh12345678'],
+    ["{'secret': 'abc12345678'}", 'abc12345678'],
+  ])('masks a quoted key %s', (input, secret) => {
+    const text = expectSecretRemoved(secret, 'assignment', input)
+    expect(text).not.toContain(secret)
+    expect(text).toContain('[REDACTED:assignment]')
+  })
+
+  // The sensitive word may be the tail of an identifier: `DBPASSWORD` is as
+  // much an environment dump as `DB_PASSWORD`.
+  it.each([
+    ['DBPASSWORD=abc12345', 'abc12345'],
+    ['MONGOPASSWORD=abc12345', 'abc12345'],
+    ['appsecret=abcdefgh1234', 'abcdefgh1234'],
+    ['DB_PASSWORD=abc12345', 'abc12345'],
+    ['AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'],
+  ])('masks a suffixed environment name %s', (input, secret) => {
+    expectSecretRemoved(secret, 'assignment', input)
+  })
+
+  // A value that contains a space must be consumed whole. Stopping at the first
+  // space is the worst outcome this layer can produce: a marker is present, so
+  // the line reads as handled, while the tail is stored in clear.
+  it.each([
+    ['password: hunter2hunter2 hunter2', 'hunter2hunter2 hunter2'],
+    ['password: correct horse battery staple', 'correct horse battery staple'],
+    ['password="correct horse"', 'correct horse'],
+  ])('masks a value containing spaces %s', (input, secret) => {
+    const text = expectSecretRemoved(secret, 'assignment', input)
+    expect(text).toBe('[REDACTED:assignment]')
+  })
+
+  it('leaves no tail of a spaced value beside the marker', () => {
+    const result = redact('password: hunter2hunter2 hunter2')
+    expect(result.text).not.toContain('hunter2')
+    expect(result.text.match(/\[REDACTED:/g)).toHaveLength(1)
+  })
+
   it('masks a token that continues past its minimum length', () => {
     // A run longer than the minimum must not defeat the match: the leading
     // minimum is the credential, the tail is a suffix.
@@ -237,7 +280,15 @@ describe('redact: negatives pass through unchanged', () => {
   })
 
   it('is idempotent', () => {
-    const input = `Authorization: Bearer ${BEARER_TOKEN}\napi_key=${ASSIGNED_VALUE}\ntoken=${OPENAI_KEY}\n${PEM}`
+    const input = [
+      `Authorization: Bearer ${BEARER_TOKEN}`,
+      `api_key=${ASSIGNED_VALUE}`,
+      `token=${OPENAI_KEY}`,
+      `{"password":"correct horse battery"}`,
+      `  "secret": "${ASSIGNED_VALUE}",`,
+      `DBPASSWORD=${ASSIGNED_VALUE}`,
+      PEM,
+    ].join('\n')
     const once = redact(input)
     const twice = redact(once.text)
     expect(twice.text).toBe(once.text)

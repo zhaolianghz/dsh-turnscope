@@ -39,16 +39,33 @@ const GUARD = '\\[REDACTED:'
 /**
  * An assignment whose name contains one of the sensitive words.
  *
- * The name is allowed to carry a prefix and a suffix (`AWS_SECRET_ACCESS_KEY`,
- * `GITHUB_TOKEN`), because an environment dump is the most likely place for a
- * credential to show up in a trace. The lookbehind stops at a bare identifier
- * character so `mysecret` is not read as `secret`; over-redacting a name that
- * merely mentions a token is the safe direction to fail in. The value must be
- * at least eight characters, which is what keeps prose like `token: abc` and
- * `password: prompt` intact.
+ * Four properties, each of which was a real leak before it was added:
+ *
+ * - The name has no leading boundary, so a sensitive word may be the tail of an
+ *   identifier: `DBPASSWORD=` is as much an environment dump as `DB_PASSWORD=`.
+ *   Requiring an identifier boundary left whole spellings of the same variable
+ *   unredacted, and partial coverage a reader cannot predict is worse than
+ *   either extreme.
+ * - The name may be followed by a closing quote, because a JSON key puts one
+ *   between the name and the separator. `"name": "value"` is the JSON spelling
+ *   of the brief's `secret: "…"`, and a stringified payload is one of the most
+ *   likely ways a credential reaches a trace.
+ * - The value may contain spaces, so a passphrase is consumed whole. Stopping at
+ *   the first space is the worst outcome this layer can produce: the marker is
+ *   present, so the line reads as handled, while the tail is stored in clear.
+ *   A value ends only at a quote, comma, semicolon or newline — the delimiters
+ *   of the surrounding syntax rather than of the credential.
+ * - The value must be at least eight characters, which is what keeps prose like
+ *   `token: abc` and `password: short` intact.
+ *
+ * Over-redaction is accepted here on purpose: the rule keys on the shape of a
+ * name rather than on whether the value is secret, so `TOKEN_TIMEOUT=30000000`
+ * and `const apiKey = getApiKey()` are eaten too, and allowing interior spaces
+ * widens a match to the end of its line. That cost is the safe direction for a
+ * privacy layer — a leaked credential is not.
  */
 const ASSIGNMENT_VALUE = new RegExp(
-  `(?<![A-Za-z0-9])(?:api[_-]?key|apikey|secret|password|passwd|pwd|token)[A-Za-z0-9_]*\\s*[:=]\\s*["']?(?!${GUARD})[^\\s"',;]{8,}["']?`,
+  `(?:api[_-]?key|apikey|secret|password|passwd|pwd|token)[A-Za-z0-9_]*["']?\\s*[:=]\\s*["']?(?!${GUARD})[^\\n"',;]{8,}["']?`,
   'gi',
 )
 
