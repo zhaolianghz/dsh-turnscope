@@ -280,5 +280,11 @@ export function hostDouble(
   const getTurnDetail = vi.fn(async () => detailReply)
   const getDiff = vi.fn(async () => diffReply)
   const evaluateSafety = vi.fn(async () => ({ kind: 'absent' as const }))
-  return { host: { listTurns, getTurnDetail, getDiff, evaluateSafety } as TurnscopeHostApi, listTurns, getTurnDetail, getDiff, evaluateSafety }
+  return {
+    host: { listTurns, getTurnDetail, getDiff, evaluateSafety } as unknown as TurnscopeHostApi,
+    listTurns,
+    getTurnDetail,
+    getDiff,
+    evaluateSafety,
+  }
 }

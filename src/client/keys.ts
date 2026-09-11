@@ -80,3 +80,29 @@ export const FRESHNESS_KEYS = {
   live: 'freshness.live',
   stable: 'freshness.stable',
 } as const satisfies Record<Freshness, TurnscopeKey>
+
+/**
+ * Recovery-section labels.
+ *
+ * The keys for `applyStatus_*` are a discriminated set: each value of the
+ * runner's terminal status maps to exactly one locale key, so the section
+ * cannot say "Apply rolled back" while the spinner reads "Apply succeeded".
+ */
+export const RECOVERY_KEYS = {
+  section: 'recovery.section',
+  title: 'recovery.title',
+  preview: 'recovery.preview',
+  apply: 'recovery.apply',
+  refresh: 'recovery.refresh',
+  previewFailed: 'recovery.previewFailed',
+  applyFailed: 'recovery.applyFailed',
+  applyStatus_completed: 'recovery.applyStatusCompleted',
+  applyStatus_rolled_back: 'recovery.applyStatusRolledBack',
+  applyStatus_failed: 'recovery.applyStatusFailed',
+  opRestore: 'recovery.opRestore',
+  opDelete: 'recovery.opDelete',
+  opRecreate: 'recovery.opRecreate',
+  opNoop: 'recovery.opNoop',
+  unfinished: 'recovery.unfinished',
+  result: 'recovery.result',
+} as const satisfies Record<string, TurnscopeKey>

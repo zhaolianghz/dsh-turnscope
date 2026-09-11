@@ -1,7 +1,9 @@
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { TurnDetailView } from './TurnDetail.tsx'
+import { RecoverySection } from './RecoverySection.tsx'
+import { useRecoveryFeed } from './recovery-feeds.ts'
 import { ACTION_KEYS, EVIDENCE_KEYS, FRESHNESS_KEYS, HOST_ONLY_STATUS_KEYS, LEVEL_KEYS, STATUS_KEYS } from './keys.ts'
 import { useFileDiffs, type FileDiffFeed } from './file-diffs.ts'
 import { freshnessOf } from './freshness.ts'
@@ -17,6 +19,24 @@ export interface TurnDetailWiring {
   readonly diffs: FileDiffFeed
   /** The clock for the detail's "evaluated …" label; see `age.ts`. */
   readonly now: number
+  /**
+   * The recovery side of the panel. Absent on renders that are not wired to
+   * a host (the V0.1 mock renders do not see the new endpoints).
+   */
+  readonly recovery?: RecoveryWiring | undefined
+}
+
+/**
+ * The wiring the recovery section needs from the connected view.
+ *
+ * One generation counter shared with the list feed: a refresh is the reader
+ * saying "what you saw may be older than the host", and that is as true of an
+ * opened rewind preview as it is of the turn list. Two counters would let
+ * them disagree on what "now" means.
+ */
+export interface RecoveryWiring {
+  readonly host: TurnscopeHostApi
+  readonly generation: number
 }
 
 /** The props the view needs beyond what the slot framework hands it. */
@@ -159,12 +179,21 @@ export function TurnscopeView({
               </button>
             )}
             {open && summary !== undefined && detail !== undefined ? (
-              <TurnDetailView
-                t={t}
-                now={detail.now}
-                diffs={detail.diffs}
-                state={detail.feed.states.get(summary.turnId) ?? { kind: 'loading' }}
-              />
+              <>
+                <TurnDetailView
+                  t={t}
+                  now={detail.now}
+                  diffs={detail.diffs}
+                  state={detail.feed.states.get(summary.turnId) ?? { kind: 'loading' }}
+                />
+                {detail.recovery !== undefined ? (
+                  <RecoverySectionConnected
+                    t={t as unknown as (key: string, vars?: Record<string, unknown>) => string}
+                    turnId={summary.turnId}
+                    wiring={detail.recovery}
+                  />
+                ) : null}
+              </>
             ) : null}
           </article>
         )
@@ -198,8 +227,43 @@ export function createTurnscopeView(host: TurnscopeHostApi) {
         {...props}
         recorded={recorded.state}
         onRefresh={refresh}
-        detail={{ feed: details, diffs, now: Date.now() }}
+        detail={{
+          feed: details,
+          diffs,
+          now: Date.now(),
+          recovery: { host, generation },
+        }}
       />
     )
   }
+}
+
+/**
+ * Thin wrapper so the recovery section can call `useRecoveryFeed`.
+ *
+ * Rules of hooks demand the hook lives in a component, not in the parent
+ * that maps over `turns`; this component is the only place the hook is
+ * called, once per open card.
+ */
+function RecoverySectionConnected({
+  t,
+  turnId,
+  wiring,
+}: {
+  readonly t: (key: string, vars?: Record<string, unknown>) => string
+  readonly turnId: string
+  readonly wiring: RecoveryWiring
+}) {
+  const feed = useRecoveryFeed(wiring.host, turnId)
+  useEffect(() => {
+    // A generation bump means the parent's view changed; the cached previews
+    // were asked under the previous workspace hash, so they cannot be trusted
+    // any longer. Drop them so the user has to press Preview again rather
+    // than Apply.
+    feed.reset()
+    // `feed` is recreated on every render of the parent; depending on it
+    // would re-run the effect on every parent update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wiring.generation])
+  return <RecoverySection t={t as unknown as (key: string, vars?: Record<string, unknown>) => string} feed={feed} />
 }

@@ -24,17 +24,22 @@ Turnscope is designed around those questions.
 - Live, newest-first turn timeline
 - Running, completed, failed, and output-limit states
 - Per-turn duration, tool count, error count, and activity list
+- Commands, test outcomes, and changed-file summaries
+- Per-turn file diffs
+- Deterministic warnings for common failure patterns
+- **V0.2 — Preview-first safe rewind**: a *Preview* button drafts a plan
+  with zero worktree writes; a separate *Apply* button commits the plan
+  with atomic rename + journal, and any mid-apply crash rolls back the
+  files to their pre-apply bytes on the next start.
 - Simplified Chinese and English copy
 - Browser-only, read-only behavior with no telemetry
 
 ## Planned MVP
 
-- Commands, test outcomes, and changed-file summaries
-- Per-turn file diffs
-- Deterministic warnings for common failure patterns
-- Preview-first safe rewind for supported Git workspaces
 - Forked retry in an isolated Git worktree and a linked DSH session
 - Local-only storage with no telemetry by default
+- V0.3 — Fork & Retry (after the §10 spike; no automatic apply, no
+  automatic model run, no LLM-as-judge).
 
 ## Safety boundary
 

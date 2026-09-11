@@ -77,6 +77,21 @@ const CSS = `
 .turnscope-diff-number{display:inline-block;width:5ch;text-align:end;padding-inline-end:1ch;opacity:.55}
 .turnscope-diff-note{margin:0;font-size:.9em;opacity:.85}
 .turnscope-diff-reason{font-weight:600}
+/* V0.2 recovery section. No new colours; the apply button's disabled state
+   inherits the rest of the panel's muted look. */
+.turnscope-recovery{display:grid;gap:8px;padding-top:8px;
+  border-top:1px dashed var(--border-color,currentColor)}
+.turnscope-recovery-header{display:flex;align-items:baseline;gap:8px}
+.turnscope-recovery-actions{display:flex;flex-wrap:wrap;gap:8px}
+.turnscope-preview,.turnscope-apply,.turnscope-refresh-list{font:inherit;color:inherit;
+  background:none;cursor:pointer;padding:2px 10px;border-radius:6px;border:1px solid currentColor}
+.turnscope-preview:disabled,.turnscope-apply:disabled,.turnscope-refresh-list:disabled{
+  opacity:.5;cursor:default}
+.turnscope-recovery-ops{margin:0;padding-inline-start:18px;font-family:ui-monospace,SFMono-Regular,
+  Menlo,monospace;font-size:.85em}
+.turnscope-recovery-failure{margin:0;font-size:.9em}
+.turnscope-recovery-result{margin:0;font-size:.9em}
+.turnscope-recovery-list{margin:0;font-size:.9em;opacity:.85}
 `
 
 let mountedStyle: HTMLStyleElement | null = null

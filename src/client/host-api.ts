@@ -34,13 +34,19 @@ import {
   readReply,
 } from '../shared/contracts/api.ts'
 import type {
+  ApplyRewindData,
+  ApplyRewindRequest,
   EvaluateSafetyData,
   EvaluateSafetyRequest,
   GetDiffData,
   GetDiffRequest,
   GetTurnDetailRequest,
+  ListRecoveryPlansData,
+  ListRecoveryPlansRequest,
   ListTurnsData,
   ListTurnsRequest,
+  PreviewRewindData,
+  PreviewRewindRequest,
   ReplyRead,
   TurnDetailData,
 } from '../shared/contracts/api.ts'
@@ -69,6 +75,24 @@ export interface TurnscopeHostApi {
    * without a second kind of nothing to handle.
    */
   readonly getDiff: (request: GetDiffRequest) => Promise<ReplyRead<GetDiffData>>
+  /**
+   * Ask the host to draft a rewind plan.
+   *
+   * Returns `unusable` for transport failures; `absent` means the host answered
+   * `data: null` (no plan, with a `failureReason` explaining why). The
+   * absence-presence distinction matters: a "Drift conflict" toast is not the
+   * same as a "Failed to load" spinner.
+   */
+  readonly previewRewind: (request: PreviewRewindRequest) => Promise<ReplyRead<PreviewRewindData>>
+  /**
+   * Apply a previously-previewed plan.
+   *
+   * Same absence-vs-unusable contract as `previewRewind`: the host's
+   * `failureReason` carries the verdict back to the UI.
+   */
+  readonly applyRewind: (request: ApplyRewindRequest) => Promise<ReplyRead<ApplyRewindData>>
+  /** List unfinished plans (crashed apply, expired preview). */
+  readonly listRecoveryPlans: (request: ListRecoveryPlansRequest) => Promise<ReplyRead<ListRecoveryPlansData>>
 }
 
 /**
@@ -112,6 +136,9 @@ export function createHostApi(rpc: ClientConnectionRpc): TurnscopeHostApi {
     getTurnDetail: (request) => call<TurnDetailData>('getTurnDetail', request),
     evaluateSafety: (request) => call<EvaluateSafetyData>('evaluateSafety', request),
     getDiff: (request) => call<GetDiffData>('getDiff', request),
+    previewRewind: (request) => call<PreviewRewindData>('previewRewind', request),
+    applyRewind: (request) => call<ApplyRewindData>('applyRewind', request),
+    listRecoveryPlans: (request) => call<ListRecoveryPlansData>('listRecoveryPlans', request),
   }
 }
 

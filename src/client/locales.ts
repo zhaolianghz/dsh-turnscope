@@ -119,6 +119,23 @@ export const zh = {
   'diff.reason.not-recorded': '未保存内容',
   'diff.reason.missing-blob': '内容已不可用',
   'diff.reason.git-unavailable': '无法访问仓储',
+  // V0.2 恢复动作：仍不向工作区写入直到用户点击 Apply。
+  'recovery.section': '恢复',
+  'recovery.title': '回滚本轮',
+  'recovery.preview': '预览回滚',
+  'recovery.apply': '应用回滚',
+  'recovery.refresh': '刷新未完成列表',
+  'recovery.previewFailed': '预览失败：{reason}',
+  'recovery.applyFailed': '应用失败：{reason}',
+  'recovery.applyStatusCompleted': '回滚已完成',
+  'recovery.applyStatusRolledBack': '回滚已被回滚（原文件已恢复）',
+  'recovery.applyStatusFailed': '回滚失败：{reason}',
+  'recovery.opRestore': '恢复 {path}',
+  'recovery.opDelete': '删除 {path}',
+  'recovery.opRecreate': '重新创建 {path}',
+  'recovery.opNoop': '跳过 {path}',
+  'recovery.unfinished': '发现 {count} 个未完成的回滚计划',
+  'recovery.result': '回滚结果：{status}',
 } satisfies Record<string, string>
 
 export type TurnscopeKey = keyof typeof zh
@@ -227,6 +244,23 @@ export const en = {
   'diff.reason.not-recorded': 'content was not saved',
   'diff.reason.missing-blob': 'content is no longer available',
   'diff.reason.git-unavailable': 'the repository could not be read',
+  // V0.2 recovery section. Preview is always safe; Apply is the only write.
+  'recovery.section': 'Recovery',
+  'recovery.title': 'Rewind this turn',
+  'recovery.preview': 'Preview rewind',
+  'recovery.apply': 'Apply rewind',
+  'recovery.refresh': 'Refresh unfinished',
+  'recovery.previewFailed': 'Preview failed: {reason}',
+  'recovery.applyFailed': 'Apply failed: {reason}',
+  'recovery.applyStatusCompleted': 'Rewind completed',
+  'recovery.applyStatusRolledBack': 'Rewind rolled back (your pre-apply file was restored)',
+  'recovery.applyStatusFailed': 'Rewind failed: {reason}',
+  'recovery.opRestore': 'Restore {path}',
+  'recovery.opDelete': 'Delete {path}',
+  'recovery.opRecreate': 'Recreate {path}',
+  'recovery.opNoop': 'Skip {path}',
+  'recovery.unfinished': '{count} unfinished rewind plan(s)',
+  'recovery.result': 'Rewind result: {status}',
 } satisfies Record<TurnscopeKey, string>
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
