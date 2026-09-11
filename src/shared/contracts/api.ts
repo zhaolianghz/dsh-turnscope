@@ -35,6 +35,12 @@ import type {
   TurnStatus,
 } from '../../host/domain/types.ts'
 import type { FileDiff } from '../../host/diff/types.ts'
+import type {
+  RecoveryFileOperation,
+  RecoveryJournalEntry,
+  RecoveryPlan,
+  RecoveryResult,
+} from '../../host/recovery/types.ts'
 
 /**
  * The contract version.
@@ -50,7 +56,7 @@ import type { FileDiff } from '../../host/diff/types.ts'
  * failing as a pair (one sentence naming both versions) is more useful than
  * failing on the one request a user happened to click.
  */
-export const API_VERSION = 2
+export const API_VERSION = 3
 
 /**
  * The namespace our host methods are registered under, and therefore the prefix
@@ -314,3 +320,80 @@ export interface EvaluateSafetyData {
   /** How many changes the judgement was made against, for a "3 changed" label. */
   readonly changeCount: number
 }
+
+// ---------------------------------------------------------------------------
+// previewRewind / applyRewind / listRecoveryPlans
+// ---------------------------------------------------------------------------
+
+/**
+ * What the client sends to ask "may I rewind this turn, and what would that
+ * look like".
+ *
+ * `evaluationId` is supplied by the client because the verdict the preview
+ * runs against may have been computed minutes ago — the client picks an id
+ * so the host can answer deterministically when the same preview is re-asked
+ * during a refresh.
+ */
+export interface PreviewRewindRequest extends TurnscopeRequestBase {
+  readonly turnId: string
+  readonly evaluationId: string
+  /**
+   * How long the preview stays valid before apply is refused (default 60s).
+   *
+   * Clamped server-side so a client cannot pin a worker thread open by
+   * asking for a million-millisecond preview.
+   */
+  readonly ttlMs?: number
+}
+
+/**
+ * The reply: either a `RecoveryPlan` to confirm in the UI, or a `failureReason`
+ * explaining why the preview cannot run.
+ *
+ * `plan: undefined` carries inside the envelope — not as an absent reply —
+ * because "no plan" and "no usable answer" are different things a UI shows
+ * differently (a "Drift conflict" toast is not a "Failed to load" spinner).
+ */
+export interface PreviewRewindData {
+  readonly plan?: RecoveryPlan
+  readonly failureReason?: string
+}
+
+export interface ApplyRewindRequest extends TurnscopeRequestBase {
+  readonly planId: string
+}
+
+export interface ApplyRewindData {
+  readonly result?: RecoveryResult
+  readonly failureReason?: string
+}
+
+/**
+ * The summary of one plan that has not reached a terminal state.
+ *
+ * Returned at boot so a UI can surface "yesterday's apply crashed" without
+ * having to re-derive it. The full plan is on disk in `recovery_plans`
+ * (`docs/ARCHITECTURE.md §5.6`) but only the unfinished ones are useful in
+ * the surface this list powers.
+ */
+export interface ListRecoveryPlansRequest extends TurnscopeRequestBase {
+  /**
+   * When false (the default), only plans whose latest status is `applying`
+   * or whose `previewed` window has elapsed are returned — the same set
+   * that needs a user decision. When true, completed and cancelled plans
+   * are included for debugging views.
+   */
+  readonly includeFinished?: boolean
+}
+
+export interface ListRecoveryPlansData {
+  readonly plans: readonly RecoveryPlan[]
+}
+
+/**
+ * Re-exported for the client so callers do not need to know which side of the
+ * port the type lives on. The types are plain interfaces that travel as JSON
+ * over the gateway, so reusing the host's types is safe and prevents the two
+ * halves from drifting.
+ */
+export type { RecoveryFileOperation, RecoveryJournalEntry, RecoveryPlan, RecoveryResult }

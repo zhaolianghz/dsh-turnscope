@@ -36,13 +36,17 @@ import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { API_VERSION, REMOTE_NAMESPACE } from '../../../shared/contracts/api.ts'
 import type {
+  ApplyRewindRequest,
   EvaluateSafetyRequest,
   GetDiffRequest,
   GetTurnDetailRequest,
+  ListRecoveryPlansRequest,
   ListTurnsRequest,
+  PreviewRewindRequest,
 } from '../../../shared/contracts/api.ts'
 import type { Diagnostics } from '../../../diagnostics.ts'
 import type { QueryService } from '../../query/service.ts'
+import type { RecoveryService } from '../../recovery/service.ts'
 
 /** The package the descriptors are attributed to, as generated artifacts do. */
 export const REMOTE_PACKAGE = '@zhaolianghz/dsh-turnscope'
@@ -74,6 +78,9 @@ export const TURNSCOPE_INVOCATIONS: readonly InvocationDescriptor[] = [
   descriptor('getTurnDetail'),
   descriptor('getDiff'),
   descriptor('evaluateSafety'),
+  descriptor('previewRewind'),
+  descriptor('applyRewind'),
+  descriptor('listRecoveryPlans'),
 ]
 
 /** The contribution handed to the registry; the descriptors plus their owner. */
@@ -113,10 +120,13 @@ export const TURNSCOPE_CONTRIBUTION: TypertContribution = {
 export class TurnscopeRemoteService extends TypertRemoteService {
   /** The read side, injected rather than built here so a test can stand in for it. */
   readonly query: QueryService
+  /** The recovery side; side-effecting by design. */
+  readonly recovery: RecoveryService
 
-  constructor(ctx: Context, query: QueryService) {
+  constructor(ctx: Context, query: QueryService, recovery: RecoveryService) {
     super(ctx, REMOTE_NAMESPACE)
     this.query = query
+    this.recovery = recovery
   }
 
   listTurns(request: ListTurnsRequest) {
@@ -133,6 +143,18 @@ export class TurnscopeRemoteService extends TypertRemoteService {
 
   getDiff(request: GetDiffRequest) {
     return this.query.getDiff(requireGetDiffRequest(request))
+  }
+
+  previewRewind(request: PreviewRewindRequest) {
+    return this.recovery.previewRewind(requirePreviewRewindRequest(request))
+  }
+
+  applyRewind(request: ApplyRewindRequest) {
+    return this.recovery.applyRewind(requireApplyRewindRequest(request))
+  }
+
+  listRecoveryPlans(request: ListRecoveryPlansRequest) {
+    return this.recovery.listUnfinished(requireListRecoveryPlansRequest(request))
   }
 }
 
@@ -185,6 +207,28 @@ function requireGetDiffRequest(value: unknown): GetDiffRequest {
   return requireRequest(value, ['turnId', 'path']) as unknown as GetDiffRequest
 }
 
+function requirePreviewRewindRequest(value: unknown): PreviewRewindRequest {
+  const request = requireRequest(value, ['turnId', 'evaluationId']) as unknown as PreviewRewindRequest
+  const ttl = request.ttlMs
+  if (ttl !== undefined && typeof ttl !== 'number') {
+    throw new Error(`${REMOTE_NAMESPACE}: request field "ttlMs" must be a number`)
+  }
+  return request
+}
+
+function requireApplyRewindRequest(value: unknown): ApplyRewindRequest {
+  return requireRequest(value, ['planId']) as unknown as ApplyRewindRequest
+}
+
+function requireListRecoveryPlansRequest(value: unknown): ListRecoveryPlansRequest {
+  const request = requireRequest(value, []) as unknown as ListRecoveryPlansRequest
+  const include = request.includeFinished
+  if (include !== undefined && typeof include !== 'boolean') {
+    throw new Error(`${REMOTE_NAMESPACE}: request field "includeFinished" must be a boolean`)
+  }
+  return request
+}
+
 /**
  * Mount the Remote face once the Typert registry exists.
  *
@@ -210,10 +254,11 @@ function requireGetDiffRequest(value: unknown): GetDiffRequest {
 export function mountTurnscopeRemoteWhenReady(
   ctx: Context,
   query: QueryService,
+  recovery: RecoveryService,
   diagnostics: Diagnostics,
 ): () => void {
   const fiber = ctx.inject(['typert'], scoped => {
-    const unmount = mountTurnscopeRemote(scoped, query, diagnostics)
+    const unmount = mountTurnscopeRemote(scoped, query, recovery, diagnostics)
     scoped.effect(() => unmount, 'turnscope remote face')
   })
   let disposed = false
@@ -249,6 +294,7 @@ export function mountTurnscopeRemoteWhenReady(
 export function mountTurnscopeRemote(
   ctx: Context,
   query: QueryService,
+  recovery: RecoveryService,
   diagnostics: Diagnostics,
 ): () => void {
   try {
@@ -271,7 +317,7 @@ export function mountTurnscopeRemote(
     // it on the current fiber, so it is released when the plugin unloads. It has
     // to exist before the descriptors are registered, or a request arriving
     // between the two would find a descriptor pointing at nothing.
-    new TurnscopeRemoteService(ctx, query)
+    new TurnscopeRemoteService(ctx, query, recovery)
     const withdraw = registry.register(TURNSCOPE_CONTRIBUTION)
 
     let mounted = true

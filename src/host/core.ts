@@ -24,6 +24,9 @@ import { createFileDiffReader } from './diff/reader.ts'
 import { createTurnInspector } from './inspection/inspector.ts'
 import type { TurnInspector } from './inspection/types.ts'
 import { createQueryService } from './query/service.ts'
+import { createRecoveryService } from './recovery/service.ts'
+import type { RecoveryClock } from './recovery/service.ts'
+import { createNodeWorktreeReader } from './storage/worktree-reader.ts'
 import { mountTurnscopeRemoteWhenReady } from './adapters/dsh/remote.ts'
 
 /** Index file name under the plugin's private data root, per `docs/ARCHITECTURE.md §4.2`. */
@@ -431,7 +434,18 @@ export async function startTraceCore(
         inspector,
         diffs: createFileDiffReader({ git, store, sink: repository }),
       })
-      const unmountRemote = mountTurnscopeRemoteWhenReady(ctx, query, diagnostics)
+      const recoveryClock: RecoveryClock = {
+        nextSeq() { return 0 },
+        nowMs() { return Date.now() },
+      }
+      const recovery = createRecoveryService({
+        sink: repository,
+        store,
+        worktree: createNodeWorktreeReader(),
+        clock: recoveryClock,
+        homeDir: root,
+      })
+      const unmountRemote = mountTurnscopeRemoteWhenReady(ctx, query, recovery, diagnostics)
       return {
         flush: () => recorder.flush(),
         stop: async () => {

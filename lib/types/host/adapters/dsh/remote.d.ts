@@ -34,9 +34,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry';
-import type { EvaluateSafetyRequest, GetDiffRequest, GetTurnDetailRequest, ListTurnsRequest } from '../../../shared/contracts/api.ts';
+import type { ApplyRewindRequest, EvaluateSafetyRequest, GetDiffRequest, GetTurnDetailRequest, ListRecoveryPlansRequest, ListTurnsRequest, PreviewRewindRequest } from '../../../shared/contracts/api.ts';
 import type { Diagnostics } from '../../../diagnostics.ts';
 import type { QueryService } from '../../query/service.ts';
+import type { RecoveryService } from '../../recovery/service.ts';
 /** The package the descriptors are attributed to, as generated artifacts do. */
 export declare const REMOTE_PACKAGE = "@zhaolianghz/dsh-turnscope";
 /**
@@ -71,11 +72,16 @@ export declare const TURNSCOPE_CONTRIBUTION: TypertContribution;
 export declare class TurnscopeRemoteService extends TypertRemoteService {
     /** The read side, injected rather than built here so a test can stand in for it. */
     readonly query: QueryService;
-    constructor(ctx: Context, query: QueryService);
+    /** The recovery side; side-effecting by design. */
+    readonly recovery: RecoveryService;
+    constructor(ctx: Context, query: QueryService, recovery: RecoveryService);
     listTurns(request: ListTurnsRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeApiEnvelope<import("../../../shared/contracts/api.ts").ListTurnsData>>;
     getTurnDetail(request: GetTurnDetailRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").TurnDetailData>>;
     evaluateSafety(request: EvaluateSafetyRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").EvaluateSafetyData>>;
     getDiff(request: GetDiffRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").GetDiffData>>;
+    previewRewind(request: PreviewRewindRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeApiEnvelope<import("../../../shared/contracts/api.ts").PreviewRewindData>>;
+    applyRewind(request: ApplyRewindRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeApiEnvelope<import("../../../shared/contracts/api.ts").ApplyRewindData>>;
+    listRecoveryPlans(request: ListRecoveryPlansRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeApiEnvelope<import("../../../shared/contracts/api.ts").ListRecoveryPlansData>>;
 }
 /**
  * Mount the Remote face once the Typert registry exists.
@@ -99,7 +105,7 @@ export declare class TurnscopeRemoteService extends TypertRemoteService {
  *
  * @returns a disposer that cancels the wait, safe to call twice.
  */
-export declare function mountTurnscopeRemoteWhenReady(ctx: Context, query: QueryService, diagnostics: Diagnostics): () => void;
+export declare function mountTurnscopeRemoteWhenReady(ctx: Context, query: QueryService, recovery: RecoveryService, diagnostics: Diagnostics): () => void;
 /**
  * Mount the Remote face on a live host context.
  *
@@ -111,5 +117,5 @@ export declare function mountTurnscopeRemoteWhenReady(ctx: Context, query: Query
  *
  * @returns a disposer that withdraws the descriptors, safe to call twice.
  */
-export declare function mountTurnscopeRemote(ctx: Context, query: QueryService, diagnostics: Diagnostics): () => void;
+export declare function mountTurnscopeRemote(ctx: Context, query: QueryService, recovery: RecoveryService, diagnostics: Diagnostics): () => void;
 //# sourceMappingURL=remote.d.ts.map

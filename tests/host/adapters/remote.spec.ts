@@ -20,6 +20,7 @@
  *   omitting the field, and it is a rule that is invisible until it is hit.
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type { RecoveryService } from '../../../src/host/recovery/service.ts'
 import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { Context } from '@deepseek-ai/cordis'
@@ -204,7 +205,7 @@ describe('the Remote face', () => {
       for (const fiber of fibers.reverse()) await fiber.dispose()
     })
 
-    mountTurnscopeRemote(ctx, createQueryService({ sink: repo, inspector, diffs }), diagnostics)
+    mountTurnscopeRemote(ctx, createQueryService({ sink: repo, inspector, diffs }), createStubRecovery(), diagnostics)
 
     const target = captured[0]
     if (target === undefined) throw new Error('the gateway installed no interceptor')
@@ -224,7 +225,7 @@ describe('the Remote face', () => {
 
   it('claims its own endpoints and nothing else', async () => {
     const host = await mount()
-    const methods = ['listTurns', 'getTurnDetail', 'getDiff', 'evaluateSafety']
+    const methods = ['listTurns', 'getTurnDetail', 'getDiff', 'evaluateSafety', 'previewRewind', 'applyRewind', 'listRecoveryPlans']
 
     expect(host.channel).toBe('/api')
     expect(TURNSCOPE_INVOCATIONS.map(descriptor => descriptor.method)).toEqual(methods)
@@ -543,6 +544,7 @@ describe('the Remote face', () => {
     const unmount = mountTurnscopeRemoteWhenReady(
       ctx,
       createQueryService({ sink: {} as never, inspector: {} as never, diffs: {} as never }),
+      createStubRecovery(),
       diagnostics,
     )
 
@@ -572,6 +574,7 @@ describe('the Remote face', () => {
     const unmount = mountTurnscopeRemote(
       ctx,
       createQueryService({ sink: {} as never, inspector: {} as never, diffs: {} as never }),
+      createStubRecovery(),
       diagnostics,
     )
 
@@ -579,3 +582,19 @@ describe('the Remote face', () => {
     expect(diagnostics.snapshot().map(entry => entry.code)).toEqual(['trace.remote-unavailable'])
   })
 })
+
+/**
+ * A no-op `RecoveryService` for tests that only exercise the descriptor /
+ * mount path.
+ *
+ * These tests pass requests that never reach `previewRewind` / `applyRewind`,
+ * so returning a stub keeps the wiring honest (the constructor needs a real
+ * value) without giving the test a second object to configure.
+ */
+function createStubRecovery(): RecoveryService {
+  return {
+    previewRewind: async () => ({ apiVersion: API_VERSION, data: {} }),
+    applyRewind: async () => ({ apiVersion: API_VERSION, data: {} }),
+    listUnfinished: async () => ({ apiVersion: API_VERSION, data: { plans: [] } }),
+  }
+}

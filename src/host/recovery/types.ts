@@ -49,7 +49,14 @@ export type RecoveryFileOperation =
   | { kind: 'noop'; path: string; reason: 'baseline_only' | 'drift_preserved' | 'unchanged' | 'unknown' }
 
 /** Lifecycle of a {@link RecoveryPlan}, per spec §5.5 / §5.6. */
-export type RecoveryPlanStatus = 'planned' | 'previewed' | 'applying' | 'completed' | 'failed' | 'cancelled'
+export type RecoveryPlanStatus =
+  | 'planned'
+  | 'previewed'
+  | 'applying'
+  | 'completed'
+  | 'failed'
+  | 'rolled_back'
+  | 'cancelled'
 
 /**
  * The rewind instruction for one turn's worth of changes.
@@ -75,6 +82,8 @@ export interface RecoveryPlan {
   readonly status: RecoveryPlanStatus
   readonly createdAt: number
   readonly expiresAt: number
+  /** Wall-clock when the plan reached a terminal state. Absent while in-flight. */
+  readonly completedAt?: number
 }
 
 /** The state machine of one op inside an apply, per spec §5.5. */
