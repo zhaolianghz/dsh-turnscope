@@ -18,7 +18,11 @@ describe('host plugin contract', () => {
   it('declares the native DSH web client face and the host bundle patch', () => {
     const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
     expect(manifest.dsh.client).toEqual({
+      // Load order, not decoration: the client bundle reaches the host through the
+      // connection service, so `dsh-client-connection` has to be in the graph
+      // before this plugin can ask anything.
       inject: [
+        '@deepseek-ai/dsh-client-connection',
         '@deepseek-ai/dsh-client-locale',
         '@deepseek-ai/dsh-client-runtime',
         '@deepseek-ai/dsh-client-ui-conversation',

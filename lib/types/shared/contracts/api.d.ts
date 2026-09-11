@@ -33,6 +33,19 @@ import type { CommandRecord, EvidenceCompleteness, FileChange, RecoveryAction, S
  * existing field means is.
  */
 export declare const API_VERSION = 1;
+/**
+ * The namespace our host methods are registered under, and therefore the prefix
+ * of every endpoint name.
+ *
+ * Shared because both halves have to spell it and only one of them chooses it:
+ * the host registers descriptors whose `service` and `namespace` are this value,
+ * and the browser asks for `turnscope/listTurns` by string. A constant that
+ * drifted between the two would look exactly like an endpoint that does not
+ * exist.
+ */
+export declare const REMOTE_NAMESPACE = "turnscope";
+/** The endpoint name one method is reached by, e.g. `turnscope/listTurns`. */
+export declare const endpointFor: (method: string) => string;
 /** One host reply, wrapped so a version mismatch cannot pass silently. */
 export interface TurnscopeApiEnvelope<T> {
     readonly apiVersion: number;
@@ -41,14 +54,78 @@ export interface TurnscopeApiEnvelope<T> {
 /** Wrap a reply. The only way a host response is constructed. */
 export declare const envelope: <T>(data: T) => TurnscopeApiEnvelope<T>;
 /**
- * Read a reply, or refuse it.
+ * A reply to a lookup, which may legitimately find nothing.
  *
- * Returns `undefined` rather than throwing because every caller of this is a UI
- * renderer, and the useful behaviour on a version mismatch is to show nothing
- * with an explanation rather than to take down the panel the user is reading.
- * The caller has to decide to handle `undefined`; that is the point.
+ * `null` rather than an omitted field, and rather than an absent reply. The
+ * gateway refuses to carry `undefined` across the boundary — its `assertJsonValue`
+ * rejects it as not JSON-safe, and the failure surfaces as "business result
+ * failed boundary validation" rather than as a missing value — so a lookup that
+ * finds nothing has to *say* so.
+ *
+ * It is distinguishable from {@link ReplyRead}'s `unusable` on purpose, and the
+ * distinction is one a UI needs: the first means the host answered and the
+ * answer is "no such turn", the second means there is no usable answer at all.
+ * Rendering those the same would turn a version mismatch into a
+ * confidently-reported absence.
  */
-export declare function unwrap<T>(reply: unknown): TurnscopeApiEnvelope<T> | undefined;
+export type TurnscopeLookupReply<T> = TurnscopeApiEnvelope<T | null>;
+/** Wrap an optional lookup result, mapping "nothing" onto the wire's `null`. */
+export declare const lookup: <T>(data: T | undefined) => TurnscopeLookupReply<T>;
+/**
+ * What reading a reply can produce.
+ *
+ * Three outcomes rather than two, because a caller has three different things to
+ * say. `absent` is the host's answer — there is no such turn — and it is worth
+ * saying out loud. `unusable` is not an answer at all: a transport failure, a
+ * version mismatch, or a reply that is not shaped like one of ours. A UI that
+ * collapsed the two would report "no turn recorded" when what actually happened
+ * is "this page cannot talk to that host", which is the more alarming of the two
+ * and the one a user would try to act on.
+ */
+export type ReplyRead<T> = {
+    readonly kind: 'value';
+    readonly value: T;
+} | {
+    readonly kind: 'absent';
+} | {
+    readonly kind: 'unusable';
+    readonly detail: string;
+};
+/**
+ * Read a reply, or explain why it is not one.
+ *
+ * Never throws, because every caller of this is a UI renderer, and the useful
+ * behaviour on a version mismatch is to show nothing with an explanation rather
+ * than to take down the panel the user is reading.
+ *
+ * Only the envelope is validated, not the payload. Checking fields here would
+ * mean writing a validator per reply shape and keeping it in step with the types
+ * it is supposed to be checking — with the failure mode that the checks silently
+ * stop covering a field someone added. What *is* checked is the one fact a type
+ * cannot carry at runtime: which version of the shapes these are.
+ *
+ * `data === null` is read as `absent` and a missing `data` as `unusable`, and
+ * the difference matters: the first is a thing the host decided to say, the
+ * second is a reply that came apart somewhere.
+ */
+export declare function readReply<T>(reply: unknown): ReplyRead<T>;
+/**
+ * How many turns one page may hold.
+ *
+ * Shared rather than host-only because both ends have to agree on it: the host
+ * clamps to the ceiling, and the client asks for the default. It lives here for
+ * the same reason the version does — a client that asked for its own idea of a
+ * page size would be making a request the host silently rewrites.
+ *
+ * Clamped rather than trusted. The limit arrives from a browser, so it is user
+ * input, and a page of a hundred thousand rows would be a self-inflicted denial
+ * of service that no validation layer above this would catch — the request is
+ * perfectly well-formed.
+ */
+export declare const TURN_PAGE_LIMIT: Readonly<{
+    default: 30;
+    max: 200;
+}>;
 /** What every request carries, so a host can reject a stale client up front. */
 export interface TurnscopeRequestBase {
     readonly apiVersion: number;

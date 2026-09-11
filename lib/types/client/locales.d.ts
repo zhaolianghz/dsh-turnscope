@@ -3,6 +3,11 @@ export declare const zh: {
     'view.title': string;
     'state.loading': string;
     'state.empty': string;
+    'safety.unavailable': string;
+    'safety.SAFE': string;
+    'safety.CAUTION': string;
+    'safety.FORK_ONLY': string;
+    'safety.UNPROTECTED': string;
     'status.running': string;
     'status.completed': string;
     'status.failed': string;
@@ -16,6 +21,11 @@ export declare const en: {
     'view.title': string;
     'state.loading': string;
     'state.empty': string;
+    'safety.unavailable': string;
+    'safety.SAFE': string;
+    'safety.CAUTION': string;
+    'safety.FORK_ONLY': string;
+    'safety.UNPROTECTED': string;
     'status.running': string;
     'status.completed': string;
     'status.failed': string;

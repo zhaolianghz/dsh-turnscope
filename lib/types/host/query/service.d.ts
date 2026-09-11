@@ -15,7 +15,7 @@
  * in-memory page of records.
  */
 import { API_VERSION } from '../../shared/contracts/api.ts';
-import type { EvaluateSafetyData, EvaluateSafetyRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, TurnDetailData, TurnscopeApiEnvelope } from '../../shared/contracts/api.ts';
+import type { EvaluateSafetyData, EvaluateSafetyRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, TurnDetailData, TurnscopeApiEnvelope, TurnscopeLookupReply } from '../../shared/contracts/api.ts';
 import type { TurnInspector } from '../inspection/types.ts';
 import type { TraceRepository } from '../storage/repository.ts';
 /**
@@ -26,18 +26,6 @@ import type { TraceRepository } from '../storage/repository.ts';
  * make a read path able to write.
  */
 export type QuerySink = Pick<TraceRepository, 'listTurns' | 'getTurn' | 'getWorkspace' | 'listFileChanges' | 'countFileChanges' | 'listCommands' | 'listTests' | 'getLatestVerdict' | 'latestVerdicts'>;
-/**
- * How many turns one page may hold.
- *
- * Clamped rather than trusted. The limit arrives from a browser, so it is user
- * input, and a page of a hundred thousand rows would be a self-inflicted denial
- * of service that no validation layer above this would catch — the request is
- * perfectly well-formed.
- */
-export declare const TURN_PAGE_LIMIT: Readonly<{
-    default: 30;
-    max: 200;
-}>;
 export interface QueryDeps {
     readonly sink: QuerySink;
     /**
@@ -47,10 +35,16 @@ export interface QueryDeps {
 }
 export interface QueryService {
     listTurns(request: ListTurnsRequest): Promise<TurnscopeApiEnvelope<ListTurnsData>>;
-    /** `undefined` when there is no such turn. */
-    getTurnDetail(request: GetTurnDetailRequest): Promise<TurnscopeApiEnvelope<TurnDetailData> | undefined>;
-    /** `undefined` when there is no such turn, or no workspace to evaluate against. */
-    evaluateSafety(request: EvaluateSafetyRequest): Promise<TurnscopeApiEnvelope<EvaluateSafetyData> | undefined>;
+    /**
+     * `data: null` when there is no such turn.
+     *
+     * The absence travels *inside* the reply rather than as an absent reply,
+     * because the transport cannot carry `undefined` and because "no such turn"
+     * and "no usable answer" are different things a UI shows differently.
+     */
+    getTurnDetail(request: GetTurnDetailRequest): Promise<TurnscopeLookupReply<TurnDetailData>>;
+    /** `data: null` when there is no such turn, or no workspace to evaluate against. */
+    evaluateSafety(request: EvaluateSafetyRequest): Promise<TurnscopeLookupReply<EvaluateSafetyData>>;
 }
 export declare function createQueryService(deps: QueryDeps): QueryService;
 /** Re-exported so a caller can check the version it is talking to. */

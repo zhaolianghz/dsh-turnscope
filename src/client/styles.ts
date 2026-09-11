@@ -6,6 +6,8 @@ const CSS = `
 .turnscope-status{font-weight:600}
 .turnscope-summary{display:flex;flex-wrap:wrap;gap:16px;margin:10px 0}.turnscope-summary div{display:flex;gap:6px}
 .turnscope-activities{display:grid;gap:6px;margin:0;padding-inline-start:22px}
+.turnscope-note{opacity:.8;margin:0}
+.turnscope-safety{font-size:.85em;padding:1px 6px;border-radius:999px;border:1px solid currentColor;opacity:.9}
 `
 
 let mountedStyle: HTMLStyleElement | null = null

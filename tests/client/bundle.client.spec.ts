@@ -17,7 +17,11 @@ describe('tsdown client artifact', () => {
 
     new Function(code)()
     expect(handoff?.id).toBe('@zhaolianghz/dsh-turnscope')
+    // `react` and `react/jsx-runtime` are platform seed words: the loader answers
+    // them from a static table rather than from the boot graph, which is why the
+    // bundle may require them and why this bench has to supply them.
     const modules = new Map<string, unknown>([
+      ['react', await import('react')],
       ['react/jsx-runtime', await import('react/jsx-runtime')],
     ])
     const exports = handoff!.factory(specifier => {
@@ -25,6 +29,6 @@ describe('tsdown client artifact', () => {
       return modules.get(specifier)
     })
     expect(exports.apply).toBeTypeOf('function')
-    expect(exports.inject).toEqual(['slots', 'sessions', 'locale'])
+    expect(exports.inject).toEqual(['slots', 'sessions', 'locale', 'connection'])
   })
 })

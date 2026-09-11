@@ -14,7 +14,7 @@
  * (`docs/ARCHITECTURE.md §28`) and what makes all of this testable against an
  * in-memory page of records.
  */
-import { API_VERSION, envelope } from '../../shared/contracts/api.ts'
+import { API_VERSION, TURN_PAGE_LIMIT, envelope, lookup } from '../../shared/contracts/api.ts'
 import type {
   EvaluateSafetyData,
   EvaluateSafetyRequest,
@@ -25,6 +25,7 @@ import type {
   TurnDetailData,
   TurnSummaryDto,
   TurnscopeApiEnvelope,
+  TurnscopeLookupReply,
 } from '../../shared/contracts/api.ts'
 import type { SafetyVerdict, TurnRecord } from '../domain/types.ts'
 import type { TurnInspector, TurnWorkspace } from '../inspection/types.ts'
@@ -50,16 +51,6 @@ export type QuerySink = Pick<
   | 'latestVerdicts'
 >
 
-/**
- * How many turns one page may hold.
- *
- * Clamped rather than trusted. The limit arrives from a browser, so it is user
- * input, and a page of a hundred thousand rows would be a self-inflicted denial
- * of service that no validation layer above this would catch — the request is
- * perfectly well-formed.
- */
-export const TURN_PAGE_LIMIT = Object.freeze({ default: 30, max: 200 })
-
 export interface QueryDeps {
   readonly sink: QuerySink
   /**
@@ -70,14 +61,16 @@ export interface QueryDeps {
 
 export interface QueryService {
   listTurns(request: ListTurnsRequest): Promise<TurnscopeApiEnvelope<ListTurnsData>>
-  /** `undefined` when there is no such turn. */
-  getTurnDetail(
-    request: GetTurnDetailRequest,
-  ): Promise<TurnscopeApiEnvelope<TurnDetailData> | undefined>
-  /** `undefined` when there is no such turn, or no workspace to evaluate against. */
-  evaluateSafety(
-    request: EvaluateSafetyRequest,
-  ): Promise<TurnscopeApiEnvelope<EvaluateSafetyData> | undefined>
+  /**
+   * `data: null` when there is no such turn.
+   *
+   * The absence travels *inside* the reply rather than as an absent reply,
+   * because the transport cannot carry `undefined` and because "no such turn"
+   * and "no usable answer" are different things a UI shows differently.
+   */
+  getTurnDetail(request: GetTurnDetailRequest): Promise<TurnscopeLookupReply<TurnDetailData>>
+  /** `data: null` when there is no such turn, or no workspace to evaluate against. */
+  evaluateSafety(request: EvaluateSafetyRequest): Promise<TurnscopeLookupReply<EvaluateSafetyData>>
 }
 
 /** Clamp a client-supplied page size into something a SQLite read can serve. */
@@ -133,7 +126,7 @@ export function createQueryService(deps: QueryDeps): QueryService {
 
     getTurnDetail: async request => {
       const turn = await sink.getTurn(request.turnId)
-      if (turn === undefined) return undefined
+      if (turn === undefined) return lookup<TurnDetailData>(undefined)
 
       // The four reads are independent, so they are issued together rather than
       // awaited in sequence: the detail view is opened on click, and four
@@ -145,7 +138,7 @@ export function createQueryService(deps: QueryDeps): QueryService {
         sink.getLatestVerdict(turn.id),
       ])
 
-      return envelope<TurnDetailData>({
+      return lookup<TurnDetailData>({
         summary: summarize(turn, changes.length, summaryOf(verdict)),
         changes,
         commands,
@@ -156,7 +149,7 @@ export function createQueryService(deps: QueryDeps): QueryService {
 
     evaluateSafety: async request => {
       const turn = await sink.getTurn(request.turnId)
-      if (turn === undefined) return undefined
+      if (turn === undefined) return lookup<EvaluateSafetyData>(undefined)
 
       // The workspace is looked up rather than remembered because a refresh can
       // arrive long after the turn, in a different process lifetime. Without a
@@ -164,11 +157,11 @@ export function createQueryService(deps: QueryDeps): QueryService {
       // would mean judging against the wrong tree; the honest answer is that we
       // cannot answer.
       const workspace = await sink.getWorkspace(turn.workspaceId)
-      if (workspace === undefined) return undefined
+      if (workspace === undefined) return lookup<EvaluateSafetyData>(undefined)
 
       const result = await inspector.refresh(turn, toTurnWorkspace(workspace))
 
-      return envelope<EvaluateSafetyData>({
+      return lookup<EvaluateSafetyData>({
         verdict: result.verdict,
         changeCount: result.changeSet?.changes.length ?? 0,
       })

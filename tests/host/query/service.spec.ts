@@ -14,9 +14,12 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type {
   EvaluateSafetyRequest,
   GetTurnDetailRequest,
+  ListTurnsData,
   ListTurnsRequest,
+  TurnDetailData,
 } from '../../../src/shared/contracts/api.ts'
-import { API_VERSION, unwrap } from '../../../src/shared/contracts/api.ts'
+import { API_VERSION, TURN_PAGE_LIMIT, lookup, readReply } from '../../../src/shared/contracts/api.ts'
+import type { TurnscopeLookupReply } from '../../../src/shared/contracts/api.ts'
 import { SCHEMA_VERSION } from '../../../src/host/domain/types.ts'
 import type {
   CommandRecord,
@@ -25,7 +28,7 @@ import type {
   WorkspaceRecord,
 } from '../../../src/host/domain/types.ts'
 import type { TurnInspector, TurnWorkspace } from '../../../src/host/inspection/types.ts'
-import { TURN_PAGE_LIMIT, createQueryService } from '../../../src/host/query/service.ts'
+import { createQueryService } from '../../../src/host/query/service.ts'
 import { createRepository } from '../../../src/host/storage/repository.ts'
 import type { TraceRepository } from '../../../src/host/storage/repository.ts'
 import { openIndex } from '../../../src/host/storage/sqlite-index.ts'
@@ -45,6 +48,18 @@ const TURN = 's-1:turn:0'
  * in this file — the kind of mistake that makes a test pass for the wrong
  * reason.
  */
+/**
+ * The payload of a lookup the test expects to have found something.
+ *
+ * Asserting here rather than reaching through `data!` keeps the null case a
+ * failing assertion with a readable message instead of a `TypeError` three lines
+ * later that says only that reading a property of `null` failed.
+ */
+const found = <T>(reply: TurnscopeLookupReply<T>): T => {
+  expect(reply.data).not.toBeNull()
+  return reply.data as T
+}
+
 const changeOn = (turnId: string, path: string) =>
   change({ turnId, id: `${turnId}:chg:${path}`, path })
 
@@ -259,24 +274,29 @@ describe('createQueryService', () => {
         ...base,
         turnId: 's-1:turn:0',
       } satisfies GetTurnDetailRequest)
+      const data = found(reply)
 
-      expect(reply?.data.summary.turnId).toBe(TURN)
+      expect(data.summary.turnId).toBe(TURN)
       // The same count the list reports, computed the same way, so a detail
       // view opened from a row cannot contradict the row.
-      expect(reply?.data.summary.changeCount).toBe(1)
-      expect(reply?.data.changes.map(c => c.path)).toEqual(['src/auth.ts'])
-      expect(reply?.data.commands.map(c => c.command)).toEqual(['pnpm test'])
-      expect(reply?.data.tests.map(t => t.summary)).toEqual(['auth suite: 12 passed'])
+      expect(data.summary.changeCount).toBe(1)
+      expect(data.changes.map(c => c.path)).toEqual(['src/auth.ts'])
+      expect(data.commands.map(c => c.command)).toEqual(['pnpm test'])
+      expect(data.tests.map(t => t.summary)).toEqual(['auth suite: 12 passed'])
       // The full verdict, reasons included: this is the screen that renders them.
-      expect(reply?.data.safety?.level).toBe('CAUTION')
+      expect(data.safety?.level).toBe('CAUTION')
     })
 
-    it('says nothing rather than something empty for a turn that does not exist', async () => {
+    it('says there is no such turn rather than failing to answer', async () => {
       const f = await fixture()
 
       const reply = await f.service.getTurnDetail({ ...base, turnId: 's-1:turn:99' })
 
-      expect(reply).toBeUndefined()
+      // `null` and not an absent reply: the host answered, and the answer is
+      // that the turn is not there. A version mismatch is the other case, and
+      // the two are told apart by `readReply` naming them separately.
+      expect(reply.data).toBeNull()
+      expect(reply.apiVersion).toBe(API_VERSION)
     })
   })
 
@@ -296,8 +316,8 @@ describe('createQueryService', () => {
       expect(f.refreshCalls).toEqual([
         { turnId: 's-1:turn:0', workspace: { workspaceId: 'ws-1', repoRoot: '/repo' } },
       ])
-      expect(reply?.data.verdict.level).toBe('CAUTION')
-      expect(reply?.data.changeCount).toBe(0)
+      expect(found(reply).verdict.level).toBe('CAUTION')
+      expect(found(reply).changeCount).toBe(0)
     })
 
     it('refuses to judge a turn whose workspace is gone', async () => {
@@ -309,7 +329,7 @@ describe('createQueryService', () => {
 
       const reply = await f.service.evaluateSafety({ ...base, turnId: 's-1:turn:0' })
 
-      expect(reply).toBeUndefined()
+      expect(reply.data).toBeNull()
       expect(f.refreshCalls).toEqual([])
     })
 
@@ -317,13 +337,24 @@ describe('createQueryService', () => {
       const f = await fixture()
       await f.seed(1)
 
-      expect(await f.service.evaluateSafety({ ...base, turnId: 's-1:turn:99' })).toBeUndefined()
+      const reply = await f.service.evaluateSafety({ ...base, turnId: 's-1:turn:99' })
+
+      expect(reply.data).toBeNull()
       expect(f.refreshCalls).toEqual([])
     })
   })
 
-  describe('unwrap', () => {
-    it('accepts a reply from this version', async () => {
+  describe('lookup', () => {
+    it('maps a missing result onto the wire null', () => {
+      // The gateway rejects `undefined` as a business result, so a lookup that
+      // finds nothing has to say so rather than omit the field.
+      expect(lookup<string>(undefined)).toEqual({ apiVersion: API_VERSION, data: null })
+      expect(lookup('a').data).toBe('a')
+    })
+  })
+
+  describe('readReply', () => {
+    it('reads a reply from this version', async () => {
       const f = await fixture()
       const reply = await f.service.listTurns({
         ...base,
@@ -331,7 +362,7 @@ describe('createQueryService', () => {
         limit: 10,
       } satisfies ListTurnsRequest)
 
-      expect(unwrap(reply)).toEqual(reply)
+      expect(readReply<ListTurnsData>(reply)).toEqual({ kind: 'value', value: reply.data })
     })
 
     it('refuses a reply from another version instead of reading its fields', async () => {
@@ -341,10 +372,28 @@ describe('createQueryService', () => {
       // The failure this exists for: a browser bundle older than the host. The
       // shapes may well still line up, which is exactly why the version has to
       // be checked rather than hoped about.
-      expect(unwrap({ ...reply, apiVersion: API_VERSION + 1 })).toBeUndefined()
-      expect(unwrap({ apiVersion: API_VERSION })).toBeUndefined()
-      expect(unwrap(null)).toBeUndefined()
-      expect(unwrap('CAUTION')).toBeUndefined()
+      const mismatch = readReply({ ...reply, apiVersion: API_VERSION + 1 })
+      expect(mismatch.kind).toBe('unusable')
+      expect(mismatch.kind === 'unusable' && mismatch.detail).toContain(String(API_VERSION))
+      expect(readReply(null).kind).toBe('unusable')
+      expect(readReply('CAUTION').kind).toBe('unusable')
+    })
+
+    it('tells "the host says there is nothing" apart from "there is no answer"', async () => {
+      const f = await fixture()
+      await f.seed(1)
+      const missing = await f.service.getTurnDetail({ ...base, turnId: 's-1:turn:99' })
+      const present = await f.service.getTurnDetail({ ...base, turnId: 's-1:turn:0' })
+
+      // Both readings a UI could get wrong, in one place: a `null` data is an
+      // answer, an absent field is a broken reply, and collapsing them would
+      // report a version mismatch as a confidently empty screen.
+      expect(readReply(missing)).toEqual({ kind: 'absent' })
+      expect(readReply<TurnDetailData>(present).kind).toBe('value')
+      expect(readReply({ apiVersion: API_VERSION })).toEqual({
+        kind: 'unusable',
+        detail: 'the host reply carries no data',
+      })
     })
   })
 })

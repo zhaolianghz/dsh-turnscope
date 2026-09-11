@@ -2,6 +2,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import { apply, inject } from '../../src/client/index.ts'
+import { API_VERSION } from '../../src/shared/contracts/api.ts'
 
 interface RuntimeExports {
   SlotRegistry: new (ctx: Context) => object
@@ -40,6 +41,18 @@ async function bench() {
   ctx.provide('locale', {
     register: () => () => {},
     bind: () => (key: string) => key === 'view.title' ? 'Turns' : key,
+  } as never)
+  // The plugin asks the host what it recorded, so it declares the connection as
+  // a dependency and cordis will not start it without one. The answer itself is
+  // not read here — these tests are about registration and lifetime — but the
+  // shape has to be one a render could survive.
+  ctx.provide('connection', {
+    rpc: {
+      call: async () => ({
+        ok: true,
+        value: { apiVersion: API_VERSION, data: { turns: [] } },
+      }),
+    },
   } as never)
   const fiber = ctx.plugin({ inject: [...inject], apply })
   await fiber.await()

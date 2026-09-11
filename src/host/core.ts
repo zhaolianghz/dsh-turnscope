@@ -22,6 +22,8 @@ import { createGitPort } from './git/git-port.ts'
 import { resolveRepositoryIdentity } from './git/identity.ts'
 import { createTurnInspector } from './inspection/inspector.ts'
 import type { TurnInspector } from './inspection/types.ts'
+import { createQueryService } from './query/service.ts'
+import { mountTurnscopeRemoteWhenReady } from './adapters/dsh/remote.ts'
 
 /** Index file name under the plugin's private data root, per `docs/ARCHITECTURE.md §4.2`. */
 export const INDEX_FILENAME = 'index.sqlite3'
@@ -417,11 +419,20 @@ export async function startTraceCore(
       const unsubscribe = subscribeSessionEvents(ctx, (session, event) => {
         void recorder.record({ id: session.id, cwd: session.header.cwd }, event)
       })
+      // The read side is built here rather than in `apply` so that it shares the
+      // recorder's repository handle: a second handle on the same file would be
+      // a second WAL writer, and its own `stop()` to get wrong. Mounting waits
+      // for the gateway (see `mountTurnscopeRemoteWhenReady`) and is best-effort
+      // — a host with no Typert registry loses the API and keeps recording — so
+      // it cannot fail this function.
+      const query = createQueryService({ sink: repository, inspector })
+      const unmountRemote = mountTurnscopeRemoteWhenReady(ctx, query, diagnostics)
       return {
         flush: () => recorder.flush(),
         stop: async () => {
           try {
             unsubscribe()
+            unmountRemote()
             await recorder.flush()
             await repository.close()
           } catch (error) {
