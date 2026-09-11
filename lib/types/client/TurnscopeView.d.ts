@@ -2,6 +2,13 @@ import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots';
 import type { TurnscopeHostApi } from './host-api.ts';
 import { type RecordedTurns } from './recorded-turns.ts';
+import { type TurnDetailFeed } from './turn-details.ts';
+/** Everything the card needs to open a turn and say how old its verdict is. */
+export interface TurnDetailWiring {
+    readonly feed: TurnDetailFeed;
+    /** The clock for the detail's "evaluated …" label; see `age.ts`. */
+    readonly now: number;
+}
 /** The props the view needs beyond what the slot framework hands it. */
 export interface TurnscopeViewProps {
     /**
@@ -13,8 +20,15 @@ export interface TurnscopeViewProps {
     readonly recorded?: RecordedTurns | undefined;
     /** Ask the host again. Absent in renders that are not wired to a host. */
     readonly onRefresh?: (() => void) | undefined;
+    /**
+     * Where a card's detail comes from, when there is a host to ask.
+     *
+     * Absent means the cards have no way in: a card that cannot be opened is honest,
+     * whereas an expander that opens onto nothing is not.
+     */
+    readonly detail?: TurnDetailWiring | undefined;
 }
-export declare function TurnscopeView({ useSession, t, recorded, onRefresh, }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps): import("react/jsx-runtime").JSX.Element;
+export declare function TurnscopeView({ useSession, t, recorded, onRefresh, detail, }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps): import("react/jsx-runtime").JSX.Element;
 /**
  * Bind the view to a live host.
  *

@@ -5,7 +5,19 @@ import { TurnscopeView, createTurnscopeView } from '../../src/client/TurnscopeVi
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
 import { API_VERSION } from '../../src/shared/contracts/api.ts'
 import type { TurnSummaryDto } from '../../src/shared/contracts/api.ts'
-import { connectedProps, hostDouble, node, props, recordedOf, row, snapshot, verdict } from './support.ts'
+import {
+  change,
+  connectedProps,
+  detail,
+  detailWiring,
+  hostDouble,
+  node,
+  props,
+  recordedOf,
+  row,
+  snapshot,
+  verdict,
+} from './support.ts'
 
 afterEach(cleanup)
 
@@ -148,6 +160,41 @@ describe('TurnscopeView', () => {
     expect(onRefresh).toHaveBeenCalledTimes(1)
   })
 
+  it('has no way into a turn the host does not know, because there is nothing to open', () => {
+    // The detail is a *record*, and only the host has one. A row is what makes an
+    // id to ask about; without a row the expander would lead nowhere, and a
+    // control that leads nowhere is read as a control that failed.
+    const view = render(<TurnscopeView
+      {...props(snapshot({
+        turnTimings: new Map([[1, { startTime: 100, endTime: 130 }], [2, { startTime: 200, endTime: 230 }]]),
+      }))}
+      recorded={recordedOf([row(2)])}
+      detail={detailWiring()}
+    />)
+
+    expect(card(view, 1).querySelector('.turnscope-expand')).toBeNull()
+    expect(card(view, 2).querySelector('.turnscope-expand')?.textContent).toBe('展开详情')
+  })
+
+  it('opens a turn onto what the host recorded, and closes it again', () => {
+    const wiring = detailWiring(
+      new Map([['t-1', { kind: 'loaded' as const, detail: detail({ changes: [change('src/a.ts')] }) }]]),
+      ['t-1'],
+    )
+    const view = render(<TurnscopeView
+      {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
+      recorded={recordedOf([row(1)])}
+      detail={wiring}
+    />)
+
+    expect(card(view, 1).querySelector('.turnscope-expand')?.getAttribute('aria-expanded')).toBe('true')
+    expect(card(view, 1).querySelector('.turnscope-detail')).toBeTruthy()
+    expect(card(view, 1).textContent).toContain('src/a.ts')
+
+    fireEvent.click(card(view, 1).querySelector('.turnscope-expand') as Element)
+    expect(wiring.feed.toggle).toHaveBeenCalledWith('t-1')
+  })
+
   it('cannot be refreshed before the first answer, because there is nothing to refresh', () => {
     const view = render(<TurnscopeView
       {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
@@ -215,6 +262,87 @@ describe('createTurnscopeView', () => {
       expect(view.getByText('与主进程一致')).toBeTruthy()
     })
     expect(first.listTurns).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks for a turn only when a reader opens it', async () => {
+    const { host, getTurnDetail } = hostDouble(
+      { kind: 'value', value: { turns: [row(1)] } },
+      { kind: 'value', value: detail({ changes: [change('src/a.ts')] }) },
+    )
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]),
+    }))} />)
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: '展开详情' })).toBeTruthy()
+    })
+    // The list is the screen; the detail is a side trip. Asking for every turn's
+    // detail up front would ship activities, commands, tests and changes for
+    // turns nobody is going to look at (`docs/ARCHITECTURE.md §44.2`).
+    expect(getTurnDetail).not.toHaveBeenCalled()
+
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    await waitFor(() => {
+      expect(view.getByText('src/a.ts')).toBeTruthy()
+    })
+    expect(getTurnDetail).toHaveBeenCalledWith({ apiVersion: API_VERSION, turnId: 't-1' })
+
+    // Collapsing and opening again shows the same answer without asking twice:
+    // the record of a finished turn does not change on the timescale of a
+    // reader's clicking, and a second round trip would only be able to differ
+    // from the first by being newer.
+    fireEvent.click(view.getByRole('button', { name: '收起详情' }))
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    expect(view.getByText('src/a.ts')).toBeTruthy()
+    expect(getTurnDetail).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-asks for an open detail when the reader refreshes, because the cache is one round of asking', async () => {
+    const { host, getTurnDetail } = hostDouble(
+      { kind: 'value', value: { turns: [row(1)] } },
+      { kind: 'value', value: detail() },
+    )
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]),
+    }))} />)
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: '展开详情' })).toBeTruthy()
+    })
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    await waitFor(() => {
+      expect(getTurnDetail).toHaveBeenCalledTimes(1)
+    })
+
+    // A refresh is the reader saying the answers on screen may be older than the
+    // host. That is as true of an opened detail as it is of the list, and a panel
+    // whose list refreshed while its detail did not would be two answers about
+    // two different moments, shown as one turn.
+    fireEvent.click(view.getByRole('button', { name: '刷新' }))
+    await waitFor(() => {
+      expect(getTurnDetail).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('says when a turn it opened cannot be read', async () => {
+    const { host } = hostDouble(
+      { kind: 'value', value: { turns: [row(1)] } },
+      { kind: 'unusable', detail: 'gateway: no such endpoint' },
+    )
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]),
+    }))} />)
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: '展开详情' })).toBeTruthy()
+    })
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    await waitFor(() => {
+      expect(view.getByRole('note').textContent).toContain('gateway: no such endpoint')
+    })
   })
 
   it('does not keep a stale session in flight from labelling the next one', async () => {

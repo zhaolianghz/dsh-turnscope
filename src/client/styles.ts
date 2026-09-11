@@ -28,6 +28,36 @@ const CSS = `
 .turnscope-action-label{opacity:.7}
 .turnscope-safety,.turnscope-evidence{font-size:.85em;padding:1px 6px;border-radius:999px;border:1px solid currentColor;opacity:.9}
 .turnscope-evidence{border-style:dashed}
+.turnscope-expand{font:inherit;color:inherit;background:none;cursor:pointer;justify-self:start;
+  padding:2px 10px;border-radius:6px;border:1px solid currentColor}
+.turnscope-detail{display:grid;gap:14px;margin-top:10px;padding-top:10px;
+  border-top:1px solid var(--border-color,currentColor)}
+.turnscope-section{display:grid;gap:6px}
+.turnscope-section h4{display:flex;align-items:center;gap:8px;margin:0;font-size:.95em}
+.turnscope-count{font-weight:400;opacity:.7}
+.turnscope-detail-note{margin:0;opacity:.8;font-size:.9em}
+.turnscope-recovery-note{font-style:italic}
+.turnscope-changes,.turnscope-tests,.turnscope-commands,.turnscope-reasons{display:grid;gap:6px;margin:0;
+  padding-inline-start:18px}
+.turnscope-change{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+.turnscope-path,.turnscope-command-text,.turnscope-reason-path,.turnscope-rename,
+.turnscope-validation-kind,.turnscope-result,.turnscope-confidence,.turnscope-baseline{
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
+.turnscope-kind,.turnscope-attribution,.turnscope-confidence,.turnscope-baseline,
+.turnscope-validation-kind,.turnscope-result,.turnscope-evaluated{opacity:.85}
+.turnscope-kind,.turnscope-attribution,.turnscope-confidence,.turnscope-baseline{
+  font-size:.85em;padding:0 6px;border-radius:4px;border:1px solid currentColor}
+.turnscope-kind,.turnscope-confidence{font-family:inherit}
+.turnscope-reason{display:grid;gap:2px}
+.turnscope-reason-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+.turnscope-reason-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em;opacity:.8}
+.turnscope-reason-detail{margin:0;opacity:.9}
+.turnscope-reason-evidence{font-size:.85em;opacity:.7}
+.turnscope-verdict{flex-wrap:wrap}
+.turnscope-evaluated{font-size:.85em;margin-inline-start:auto}
+.turnscope-allowed{margin:0;display:flex;gap:6px}
+.turnscope-command,.turnscope-test{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+.turnscope-test-summary{opacity:.9}
 `
 
 let mountedStyle: HTMLStyleElement | null = null

@@ -1,81 +1,19 @@
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SafetySummaryDto, TurnSummaryDto } from '../shared/contracts/api.ts'
-import { freshnessOf, type Freshness } from './freshness.ts'
+import { useCallback, useState } from 'react'
+import { TurnDetailView } from './TurnDetail.tsx'
+import { ACTION_KEYS, EVIDENCE_KEYS, FRESHNESS_KEYS, HOST_ONLY_STATUS_KEYS, LEVEL_KEYS, STATUS_KEYS } from './keys.ts'
+import { freshnessOf } from './freshness.ts'
 import type { TurnscopeHostApi } from './host-api.ts'
-import type { TurnscopeKey } from './locales.ts'
 import { useRecordedTurns, type RecordedTurns } from './recorded-turns.ts'
-import { deriveTurnModels, type TurnStatus } from './turn-model.ts'
+import { useTurnDetails, type TurnDetailFeed } from './turn-details.ts'
+import { deriveTurnModels } from './turn-model.ts'
 
-// Every vocabulary below is read off the contract's own shapes rather than
-// restated beside them: a second copy of a union is a second thing to keep in
-// step, and the failure mode of a drifted copy is a label for a value the host
-// never sends, with nothing to catch it.
-
-/** The level a verdict carries. */
-type SafetyLevel = SafetySummaryDto['level']
-
-/** The action the host recommends. */
-type RecoveryAction = SafetySummaryDto['recommendedAction']
-
-/** How much of a turn's evidence exists, as the host reports it. */
-type EvidenceCompleteness = TurnSummaryDto['evidenceCompleteness']
-
-/** A turn's stored status, which is a slightly larger set than the timeline's. */
-type HostTurnStatus = TurnSummaryDto['status']
-
-const STATUS_KEYS = {
-  running: 'status.running',
-  completed: 'status.completed',
-  failed: 'status.failed',
-  'max-tokens': 'status.maxTokens',
-} as const satisfies Record<TurnStatus, TurnscopeKey>
-
-const LEVEL_KEYS = {
-  SAFE: 'safety.SAFE',
-  CAUTION: 'safety.CAUTION',
-  FORK_ONLY: 'safety.FORK_ONLY',
-  UNPROTECTED: 'safety.UNPROTECTED',
-} as const satisfies Record<SafetyLevel, TurnscopeKey>
-
-const ACTION_KEYS = {
-  INSPECT: 'action.INSPECT',
-  PREVIEW_REWIND: 'action.PREVIEW_REWIND',
-  REWIND: 'action.REWIND',
-  FORK: 'action.FORK',
-  NONE: 'action.NONE',
-} as const satisfies Record<RecoveryAction, TurnscopeKey>
-
-const EVIDENCE_KEYS = {
-  complete: 'evidence.complete',
-  partial: 'evidence.partial',
-  missing: 'evidence.missing',
-} as const satisfies Record<EvidenceCompleteness, TurnscopeKey>
-
-const FRESHNESS_KEYS = {
-  loading: 'freshness.loading',
-  error: 'freshness.error',
-  stale: 'freshness.stale',
-  live: 'freshness.live',
-  stable: 'freshness.stable',
-} as const satisfies Record<Freshness, TurnscopeKey>
-
-/**
- * The host's status words, for the states the timeline cannot express.
- *
- * The card's own status line is the conversation's — it is the thing the user is
- * looking at, and it is the same numbering and the same turns. But the host knows
- * two end states the conversation does not derive: a turn cancelled before it ran,
- * and a turn the host marked interrupted. Those are shown as a second chip rather
- * than allowed to overwrite the first, because they are two claims and only one of
- * them is about the timeline. A host status the timeline *can* express (`running`,
- * `completed`, `failed`, `output_limited`) is left out — repeating it as "host
- * recorded: running" next to "Running" would be noise pretending to be evidence.
- */
-const HOST_ONLY_STATUS_KEYS: Partial<Record<HostTurnStatus, TurnscopeKey>> = {
-  pending: 'status.pending',
-  interrupted: 'status.interrupted',
-  cancelled: 'status.cancelled',
+/** Everything the card needs to open a turn and say how old its verdict is. */
+export interface TurnDetailWiring {
+  readonly feed: TurnDetailFeed
+  /** The clock for the detail's "evaluated …" label; see `age.ts`. */
+  readonly now: number
 }
 
 /** The props the view needs beyond what the slot framework hands it. */
@@ -89,6 +27,13 @@ export interface TurnscopeViewProps {
   readonly recorded?: RecordedTurns | undefined
   /** Ask the host again. Absent in renders that are not wired to a host. */
   readonly onRefresh?: (() => void) | undefined
+  /**
+   * Where a card's detail comes from, when there is a host to ask.
+   *
+   * Absent means the cards have no way in: a card that cannot be opened is honest,
+   * whereas an expander that opens onto nothing is not.
+   */
+  readonly detail?: TurnDetailWiring | undefined
 }
 
 export function TurnscopeView({
@@ -96,6 +41,7 @@ export function TurnscopeView({
   t,
   recorded,
   onRefresh,
+  detail,
 }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps) {
   const openState = useSession(snapshot => snapshot.openState)
   const turns = useSession(deriveTurnModels)
@@ -139,6 +85,7 @@ export function TurnscopeView({
       {turns.map(turn => {
         const summary = recorded?.turns.get(turn.turn)
         const hostOnly = summary === undefined ? undefined : HOST_ONLY_STATUS_KEYS[summary.status]
+        const open = summary !== undefined && detail?.feed.expanded.has(summary.turnId) === true
         return (
           <article
             key={turn.turn}
@@ -194,6 +141,27 @@ export function TurnscopeView({
             <ol className="turnscope-activities">
               {turn.activities.map(activity => <li key={activity.id}>{activity.label}</li>)}
             </ol>
+            {/* The raw events above are the timeline the reader already has; the
+                detail is the *recorded* account of them, which is why it is worth
+                a round trip and why it is only asked for on request
+                (`docs/ARCHITECTURE.md §44.2`). */}
+            {summary === undefined || detail === undefined ? null : (
+              <button
+                type="button"
+                className="turnscope-expand"
+                aria-expanded={open}
+                onClick={() => detail.feed.toggle(summary.turnId)}
+              >
+                {t(open ? 'detail.hide' : 'detail.show')}
+              </button>
+            )}
+            {open && summary !== undefined && detail !== undefined ? (
+              <TurnDetailView
+                t={t}
+                now={detail.now}
+                state={detail.feed.states.get(summary.turnId) ?? { kind: 'loading' }}
+              />
+            ) : null}
           </article>
         )
       })}
@@ -213,7 +181,20 @@ export function TurnscopeView({
 export function createTurnscopeView(host: TurnscopeHostApi) {
   return function TurnscopeViewConnected(props: ConvViewProps & PropsLocale<'turnscope'>) {
     const sessionId = props.useSession(snapshot => snapshot.sessionId)
-    const feed = useRecordedTurns(host, sessionId)
-    return <TurnscopeView {...props} recorded={feed.state} onRefresh={feed.refresh} />
+    // One counter for both feeds: a refresh is the reader saying the answers on
+    // screen may be older than the host, and that is as true of an opened detail
+    // as it is of the list. Two counters would let the two disagree.
+    const [generation, setGeneration] = useState(0)
+    const recorded = useRecordedTurns(host, sessionId, generation)
+    const details = useTurnDetails(host, generation)
+    const refresh = useCallback(() => setGeneration(current => current + 1), [])
+    return (
+      <TurnscopeView
+        {...props}
+        recorded={recorded.state}
+        onRefresh={refresh}
+        detail={{ feed: details, now: Date.now() }}
+      />
+    )
   }
 }

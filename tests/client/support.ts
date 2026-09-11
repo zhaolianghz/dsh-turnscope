@@ -12,7 +12,11 @@ import { createTurnscopeView, type TurnscopeView } from '../../src/client/Turnsc
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
 import type { RecordedTurns } from '../../src/client/recorded-turns.ts'
 import { zh, type TurnscopeKey } from '../../src/client/locales.ts'
+import type { TurnDetailData } from '../../src/shared/contracts/api.ts'
 import type { ReplyRead, SafetySummaryDto, TurnSummaryDto } from '../../src/shared/contracts/api.ts'
+import { TurnDetailView } from '../../src/client/TurnDetail.tsx'
+import type { TurnDetailFeed, TurnDetailState } from '../../src/client/turn-details.ts'
+import type { TurnDetailWiring } from '../../src/client/TurnscopeView.tsx'
 
 export const node = (value: object): ConversationNode => value as unknown as ConversationNode
 
@@ -74,11 +78,118 @@ export const props = (value: ConversationSnapshot): Parameters<typeof TurnscopeV
   t: translate,
 } as Parameters<typeof TurnscopeView>[0])
 
+/**
+ * The seats `TurnDetailView` needs.
+ *
+ * The cast is the same one `props` makes: the framework types `t` against the
+ * locale registry, which maps a namespace to `string` keys, while the panel's own
+ * `t` is keyed by the union its dictionaries define. The fixture's `t` is the
+ * latter on purpose — it is the one that would catch a key the panel forgot to
+ * translate.
+ */
+export const detailProps = (
+  state: TurnDetailState,
+  now = 0,
+): Parameters<typeof TurnDetailView>[0] =>
+  ({ state, now, t: translate } as unknown as Parameters<typeof TurnDetailView>[0])
+
 /** The same seats, minus the one the connected view supplies itself. */
 export const connectedProps = (
   value: ConversationSnapshot,
 ): Parameters<ReturnType<typeof createTurnscopeView>>[0] =>
   props(value) as unknown as Parameters<ReturnType<typeof createTurnscopeView>>[0]
+
+/** One recorded file change, with the attribution that makes it interesting. */
+export const change = (
+  path: string,
+  overrides: Partial<TurnDetailData['changes'][number]> = {},
+): TurnDetailData['changes'][number] => ({
+  schemaVersion: 2,
+  id: `c-${path}`,
+  turnId: 't-1',
+  path,
+  kind: 'modified',
+  attribution: 'AGENT',
+  confidence: 'high',
+  baseline: false,
+  evidenceRefs: [],
+  ...overrides,
+})
+
+type SafetyReason = NonNullable<TurnDetailData['safety']>['reasons'][number]
+
+/** One reason a verdict gives, as the rule that produced it wrote it. */
+export const reason = (code: string, overrides: Partial<SafetyReason> = {}): SafetyReason => ({
+  code,
+  title: `${code} title`,
+  detail: `${code} detail`,
+  severity: 'CAUTION',
+  evidenceRefs: [],
+  ...overrides,
+})
+
+/** The full verdict, as stored — `verdict()` above is only the summary's part. */
+export const fullVerdict = (
+  level: SafetySummaryDto['level'],
+  overrides: Partial<NonNullable<TurnDetailData['safety']>> = {},
+): NonNullable<TurnDetailData['safety']> => ({
+  schemaVersion: 2,
+  id: 'v-1',
+  turnId: 't-1',
+  level,
+  reasons: [],
+  allowedActions: [overrides.recommendedAction ?? 'INSPECT'],
+  recommendedAction: 'INSPECT',
+  evaluatedAt: 0,
+  engineVersion: 1,
+  ...overrides,
+})
+
+export const command = (
+  command_: string,
+  overrides: Partial<TurnDetailData['commands'][number]> = {},
+): TurnDetailData['commands'][number] => ({
+  schemaVersion: 2,
+  id: `cmd-${command_}`,
+  turnId: 't-1',
+  command: command_,
+  ...overrides,
+})
+
+export const test = (
+  overrides: Partial<TurnDetailData['tests'][number]> = {},
+): TurnDetailData['tests'][number] => ({
+  schemaVersion: 2,
+  id: 'test-1',
+  turnId: 't-1',
+  kind: 'test',
+  status: 'passed',
+  summary: '3 passed',
+  ...overrides,
+})
+
+/** A turn's recorded detail: the row's counts, and nothing recorded under them. */
+export const detail = (overrides: Partial<TurnDetailData> = {}): TurnDetailData => ({
+  summary: row(1),
+  changes: [],
+  commands: [],
+  tests: [],
+  ...overrides,
+})
+
+/** A detail feed in whatever state a test needs, without a host or a promise. */
+export const detailWiring = (
+  states: ReadonlyMap<string, TurnDetailState> = new Map(),
+  expanded: Iterable<string> = [],
+  now = 0,
+): TurnDetailWiring => {
+  const feed: TurnDetailFeed = {
+    states,
+    expanded: new Set(expanded),
+    toggle: vi.fn(),
+  }
+  return { feed, now }
+}
 
 export interface HostDouble {
   readonly host: TurnscopeHostApi
@@ -100,9 +211,10 @@ export function hostDouble(
     kind: 'value',
     value: { turns: [] },
   },
+  detailReply: ReplyRead<TurnDetailData> = { kind: 'absent' },
 ): HostDouble {
   const listTurns = vi.fn(async () => listReply)
-  const getTurnDetail = vi.fn(async () => ({ kind: 'absent' as const }))
+  const getTurnDetail = vi.fn(async () => detailReply)
   const getDiff = vi.fn(async () => ({ kind: 'absent' as const }))
   const evaluateSafety = vi.fn(async () => ({ kind: 'absent' as const }))
   return { host: { listTurns, getTurnDetail, getDiff, evaluateSafety } as TurnscopeHostApi, listTurns, getTurnDetail, getDiff, evaluateSafety }

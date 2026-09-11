@@ -10,8 +10,6 @@ export interface RecordedTurns {
 export interface RecordedTurnsFeed {
     /** Absent until the first answer for *this* session has arrived. */
     readonly state: RecordedTurns | undefined;
-    /** Ask again. Cheap enough to be a button, and the only way out of `stale`. */
-    readonly refresh: () => void;
 }
 /**
  * Ask the host once per session, and again when asked.
@@ -27,6 +25,11 @@ export interface RecordedTurnsFeed {
  * already knows rather than an empty frame that would then fill in — a shift from
  * "no safety information" to "safety information" is worse than a moment of
  * neither.
+ *
+ * `generation` is the caller's refresh counter: bumping it asks again, and it is
+ * owned by the container rather than by this hook because a refresh also has to
+ * retire the cached turn details. One counter, so the list and the details are
+ * always answers to the same round of asking.
  */
-export declare function useRecordedTurns(host: TurnscopeHostApi, sessionId: string): RecordedTurnsFeed;
+export declare function useRecordedTurns(host: TurnscopeHostApi, sessionId: string, generation: number): RecordedTurnsFeed;
 //# sourceMappingURL=recorded-turns.d.ts.map

@@ -14,7 +14,7 @@
  * live, and those belong on the same card as the badge: a verdict shown without
  * the evidence it rests on can be read as more certain than it is.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { API_VERSION, TURN_PAGE_LIMIT } from '../shared/contracts/api.ts'
 import type { TurnSummaryDto } from '../shared/contracts/api.ts'
 import type { TurnscopeHostApi } from './host-api.ts'
@@ -30,8 +30,6 @@ export interface RecordedTurns {
 export interface RecordedTurnsFeed {
   /** Absent until the first answer for *this* session has arrived. */
   readonly state: RecordedTurns | undefined
-  /** Ask again. Cheap enough to be a button, and the only way out of `stale`. */
-  readonly refresh: () => void
 }
 
 /**
@@ -48,10 +46,18 @@ export interface RecordedTurnsFeed {
  * already knows rather than an empty frame that would then fill in — a shift from
  * "no safety information" to "safety information" is worse than a moment of
  * neither.
+ *
+ * `generation` is the caller's refresh counter: bumping it asks again, and it is
+ * owned by the container rather than by this hook because a refresh also has to
+ * retire the cached turn details. One counter, so the list and the details are
+ * always answers to the same round of asking.
  */
-export function useRecordedTurns(host: TurnscopeHostApi, sessionId: string): RecordedTurnsFeed {
+export function useRecordedTurns(
+  host: TurnscopeHostApi,
+  sessionId: string,
+  generation: number,
+): RecordedTurnsFeed {
   const [answer, setAnswer] = useState<{ sessionId: string; recorded: RecordedTurns } | undefined>(undefined)
-  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let live = true
@@ -67,11 +73,10 @@ export function useRecordedTurns(host: TurnscopeHostApi, sessionId: string): Rec
     return () => {
       live = false
     }
-  }, [host, sessionId, attempt])
+  }, [host, sessionId, generation])
 
-  const refresh = useCallback(() => setAttempt(count => count + 1), [])
   const recorded = answer !== undefined && answer.sessionId === sessionId ? answer.recorded : undefined
-  return { state: recorded, refresh }
+  return { state: recorded }
 }
 
 const read = (answer: Awaited<ReturnType<TurnscopeHostApi['listTurns']>>): RecordedTurns => {
