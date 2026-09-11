@@ -26,4 +26,13 @@ export declare function checkpointIdFor(turnId: string, phase: CheckpointPhase):
  * rather than appending a second copy of the same file.
  */
 export declare function checkpointPathIdFor(checkpointId: string, path: string): string;
+/**
+ * `${turnId}:chg:${path}` — one attributed file change of a turn.
+ *
+ * Keyed by the path rather than an activity: attribution is a property of the
+ * path across the whole turn, and re-running it (at turn close, then again when
+ * safety re-reads CURRENT) must land on the same row instead of appending a
+ * second opinion.
+ */
+export declare function fileChangeIdFor(turnId: string, path: string): string;
 //# sourceMappingURL=ids.d.ts.map

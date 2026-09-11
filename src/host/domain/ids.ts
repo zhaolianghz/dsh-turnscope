@@ -39,3 +39,15 @@ export function checkpointIdFor(turnId: string, phase: CheckpointPhase): string 
 export function checkpointPathIdFor(checkpointId: string, path: string): string {
   return `${checkpointId}:path:${path}`
 }
+
+/**
+ * `${turnId}:chg:${path}` — one attributed file change of a turn.
+ *
+ * Keyed by the path rather than an activity: attribution is a property of the
+ * path across the whole turn, and re-running it (at turn close, then again when
+ * safety re-reads CURRENT) must land on the same row instead of appending a
+ * second opinion.
+ */
+export function fileChangeIdFor(turnId: string, path: string): string {
+  return `${turnId}:chg:${path}`
+}
