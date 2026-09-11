@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { Context } from '@deepseek-ai/cordis'
+import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
 import { describe, expect, it } from 'vitest'
 import { apply, inject } from '../../src/client/index.ts'
 import { API_VERSION } from '../../src/shared/contracts/api.ts'
@@ -66,6 +67,18 @@ describe('Turnscope browser plugin', () => {
       id: 'turnscope',
       order: 20,
     })
+    await fiber.dispose()
+  })
+
+  // A real page caught this: the tab strip showed the literal `view.title`
+  // beside 对话 and 轨迹, because `resolveSlotLabel` translates nothing — it
+  // calls thunks and returns plain strings as they are. The assertion is on the
+  // resolved label rather than on `typeof label === 'function'`, so it states the
+  // requirement (readable text) instead of today's way of meeting it.
+  it('shows the tab a translated label, not the dictionary key', async () => {
+    const { ctx, fiber } = await bench()
+    const { label } = ctx.slots.entries('conversation.view')[0]?.options ?? {}
+    expect(resolveSlotLabel(label)).toBe('Turns')
     await fiber.dispose()
   })
 

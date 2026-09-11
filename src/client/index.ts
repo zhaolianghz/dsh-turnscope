@@ -18,6 +18,7 @@ export const inject = ['slots', 'sessions', 'locale', 'connection']
 
 export function apply(ctx: ClientContext): void {
   const host = createHostApi(connectionOf(ctx).rpc)
+  const t = ctx.locale.bind(NS)
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'turnscope: dictionaries')
   ctx.effect(installStyles, 'turnscope: styles')
@@ -26,7 +27,14 @@ export function apply(ctx: ClientContext): void {
     id: 'turnscope',
     order: 20,
     locale: NS,
-    label: 'view.title',
+    // A thunk, not the key: `resolveSlotLabel` translates nothing — it calls
+    // thunks and passes plain strings through verbatim, so a bare `'view.title'`
+    // reaches the tab strip as the literal text `view.title` beside the
+    // first-party tabs. The `locale: NS` above only synthesizes the component's
+    // own `t`; it does not reach this label. Being a thunk also means the tab
+    // re-reads the dictionary when the reader switches language, which a string
+    // resolved once at registration could not do.
+    label: () => t('view.title'),
   }, createTurnscopeView(host)))
 }
 

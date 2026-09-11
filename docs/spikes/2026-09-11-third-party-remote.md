@@ -158,3 +158,61 @@ PASS: a third-party client plugin injected `connection`, completed a /api round 
 ## 仍然没有证的部分
 
 **真实页面上 `conversation.view` 那个 tab**。我们的 client 插件不是 `immediately: true`——它要等 slot 消费者把它激活，而 slot 消费者要有一场打开的 session。这一条属于 Phase G 的验收，不是本轮；本轮证明的是「接口通」，不是「面板出现了」。
+
+（已于同日补证，见下节。）
+
+# 补证三：面板真的出现在 tab 上（同日）
+
+上一节留的那条——「面板出现了」——现在也证了，同一个 `run.sh`。这一轮抓出**一个真 bug**，而且是只有真实页面能抓到的那类。
+
+## 先侦察，再断言
+
+面板前面有三道门，都不是猜出来的，是 `INSPECT=1 run.sh`（`inspect.mjs`，只 dump 不断言，写在 `drive.mjs` 之前退出，所以判决不受探索性改动影响）一层层看出来的：
+
+1. **内测声明**，唯一动作是「继续」；不点它下面什么都碰不到。
+2. **没有 workspace 就开不了 session**。落地页只给一个 workspace picker，composer 被禁用并写着「选择一个工作区开始」。picker 会打开目录选择对话框，**CDP 驱动不了**。所以 workspace 由 host 侧种下：`seed-workspace.js` 调 `@deepseek-ai/dsh-workspace` 公开的 `ctx.workspaceRegistry.create(path)`——不是往存储文件里伪造记录，路径规范化、时间戳、durable order 都是真实代码写的，页面读到的就是真记录。目录是 `$WORK` 里现建的空仓库，不是 `$REPO`：session 的 cwd 会成为 workspace 根，把真实 app 指向我们自己的 checkout 等于请它往那儿写。
+3. **`composerPhase === 'blank'` 时 tab strip 根本不存在**。`ConversationSession` 在 `blank && composerPhase === 'blank'` 时 `return null`（`dsh-client-ui-conversation/lib/client.js`）。关键是 `derivePhase` 的第二个输入是 `promptAttempted`——**发起过就算，不需要答成**。所以驱动只要往 composer 里塞一句话并点发送，phase 就离开 `blank`，tab ring 挂载；这一步不需要任何模型凭据，那条 prompt 本来就该失败。
+
+顺带记下：**这个 app 全程没有一个 `data-testid`**（每屏 `testids: []`），所以驱动只能按它自己的可见文案点，`drive.mjs` 的 `clickByText` 就是这个原因。
+
+## 抓到的 bug：tab 上写的是 `view.title`
+
+第一次看到 tab strip 时是这样：
+
+```
+["对话","轨迹","view.title"]
+```
+
+第一方两个 tab 正常，我们的 tab 显示的是**字典 key 本身**。原因在 `resolveSlotLabel`：
+
+```js
+function resolveSlotLabel(label) {
+  return typeof label === "function" ? label() : label;
+}
+```
+
+它**不翻译**——只调 thunk，普通字符串原样返回。我们写的是 `label: 'view.title'`，第一方写的是 `label: () => t('view.trajectory')`。而 `register` 上的 `locale: NS` 只负责给组件合成 `t` 那个 prop，**不管这个 label**。改法就是一个 thunk；额外的好处是切语言时 tab 会跟着变，注册时求值一次的字符串做不到。
+
+**为什么单测漏了它**：既有断言只看 `options` 里的 `id` / `order`。字典里 `'view.title': '轮次'` 一直存在且正确，`ctx.locale.register` 也调了——每一半都对，接不上的是「谁负责把 key 变成字, 」这个约定，而它写在第一方渲染器里。现在补的回归测试断言的是**解析后的 label 等于 `'Turns'`**，而不是 `typeof label === 'function'`：要钉住的是「读者看到人话」，不是今天用来实现它的手法。已验证把代码改回字符串时该测试确实红（`expected 'view.title' to be 'Turns'`）。
+
+## 结果
+
+```
+--- the tab strip ---
+["对话","轨迹","轮次"]
+--- opening the turnscope tab ---
+clicked the turnscope tab
+--- panel ---
+{"panel":"present","freshness":"stable","cards":1,"note":null,
+ "text":"与主进程一致 刷新 Turn 1 失败 安全 证据缺失 变更文件 0 工具 0 异常 1 耗时 62 ms 建议动作 可安全回滚 …"}
+```
+
+判决按**翻译后的文案**断言（`grep -q '轮次'`），不按 key：这次的失败形态恰恰是「tab 在、写着 `view.title`」，按 key 断言会绿着放过去。
+
+值得看的是那张卡片本身：那句 prompt 因为没有模型凭据而失败，于是 host 记下一个 `failed` 的 turn，面板把它渲染成 `变更文件 0 / 异常 1 / 耗时 62 ms / 建议动作 可安全回滚`，freshness 为 `stable`。也就是说这不是一个空面板通过了检查——**一次真实的失败 turn 走完了 observer → attribution → safety → sqlite → RPC → 渲染的全程**，而 `轮次` 这个 tab 上的判决是 host 算出来的。
+
+## 对计划的影响
+
+- Phase F 偏差第 14 条（「面板级验收属于 Phase G」）**已关闭**，不必顺延到 Phase G。
+- Phase G 的 UI 工作从此有了一条可重放的真实通道：`bash docs/spikes/client-remote-smoke/run.sh`（断言到面板）、`INSPECT=1 bash …/run.sh`（只侦察）。
+- 仍然只在 `$WORK` 内写文件；`~/.dsh/profiles/web` 未被新建也未被修改。

@@ -98,6 +98,50 @@ cat > "$PROBE/cordis.patch.yml" <<'YML'
       name: '@zhaolianghz/dsh-connection-probe'
 YML
 
+# ---------------------------------------------------------------------------
+# The fixture: a workspace, so that the page can open a session.
+#
+# Our client plugin is not `immediately: true`; its `conversation.view`
+# contribution only lands once that view is mounted, which needs an open
+# session, which the app refuses without a workspace. The picker on the landing
+# page opens a directory dialog CDP cannot drive, so the workspace is registered
+# host-side through the published `ctx.workspaceRegistry.create`.
+#
+# The directory is a scratch git repo rather than $REPO: a session's cwd becomes
+# the workspace root, and pointing the real app at our own checkout invites it to
+# write there.
+# ---------------------------------------------------------------------------
+SEED_WORKSPACE="$WORK/workspace"
+mkdir -p "$SEED_WORKSPACE"
+git -C "$SEED_WORKSPACE" init -q
+git -C "$SEED_WORKSPACE" -c user.email=smoke@example.invalid -c user.name=smoke \
+  commit -q --allow-empty -m 'empty baseline'
+
+SEED="$WORK/seed"
+mkdir -p "$SEED"
+ln -s "$SEED" "$PROFILE_DIR/node_modules/@zhaolianghz/dsh-ts-seed-workspace"
+cp "$HERE/seed-workspace.js" "$SEED/index.js"
+cat > "$SEED/package.json" <<'JSON'
+{
+  "name": "@zhaolianghz/dsh-ts-seed-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}
+JSON
+cat > "$SEED/cordis.patch.yml" <<'YML'
+- insert:
+    - id: ts-seed-workspace
+      name: '@zhaolianghz/dsh-ts-seed-workspace'
+YML
+
 # `dataDir` is pinned because the default is `$DSH_HOME/turnscope` and this run
 # is not the user's data.
 cat > "$WORK/patch.yml" <<'YML'
@@ -124,6 +168,7 @@ cat > "$WORK/home/profiles/ts-smoke/package.json" <<'JSON'
         "@deepseek-ai/dsh-base",
         "@deepseek-ai/dsh-web-app",
         "@zhaolianghz/dsh-connection-probe",
+        "@zhaolianghz/dsh-ts-seed-workspace",
         "@zhaolianghz/dsh-turnscope"
       ]
     }
@@ -138,7 +183,8 @@ DSH_HOME="$WORK/home" dsh --profile ts-smoke --patch "$WORK/patch.yml" --dump-co
   | grep -E "^- (id|  name):|turnscope|connection-probe" | tail -6
 
 echo "== booting dsh web on :$PORT =="
-DSH_HOME="$WORK/home" dsh --profile ts-smoke --patch "$WORK/patch.yml" \
+DSH_HOME="$WORK/home" TS_SEED_WORKSPACE="$SEED_WORKSPACE" \
+  dsh --profile ts-smoke --patch "$WORK/patch.yml" \
   --port "$PORT" --no-open > "$WORK/dsh.log" 2>&1 &
 DSH_PID=$!
 disown "$DSH_PID" 2>/dev/null || true
@@ -163,11 +209,25 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 
+if [ -n "${INSPECT:-}" ]; then
+  # Reconnaissance mode: dump what the page renders instead of asserting the
+  # round trip. Nothing below this block runs, so the proof's verdict cannot be
+  # affected by an exploratory edit to `inspect.mjs`.
+  node "$HERE/inspect.mjs" "$CDP_PORT" "http://127.0.0.1:$PORT/"
+  exit 0
+fi
+
 node "$HERE/drive.mjs" "$CDP_PORT" "http://127.0.0.1:$PORT/" | tee "$WORK/report.txt"
 
 echo "== verdict =="
 grep -q 'apply() ran' "$WORK/report.txt" || { echo "FAIL: connection was not injected" >&2; exit 1; }
 grep -q 'PROBE: rpc resolved -> {"ok":true' "$WORK/report.txt" || { echo "FAIL: the gateway did not answer" >&2; exit 1; }
 grep -q '"turns":\[\]' "$WORK/report.txt" || { echo "FAIL: turnscope/listTurns did not answer with an empty page" >&2; exit 1; }
+# The tab is asserted by its translated label, because the failure this caught was
+# a tab that existed and read `view.title`. Matching the key would have passed.
+grep -q '轮次' "$WORK/report.txt" || { echo "FAIL: no tab labelled 轮次 in the conversation view" >&2; exit 1; }
+grep -q 'clicked the turnscope tab' "$WORK/report.txt" || { echo "FAIL: the turnscope tab could not be opened" >&2; exit 1; }
+grep -q '"panel":"present"' "$WORK/report.txt" || { echo "FAIL: the panel did not render behind its tab" >&2; exit 1; }
 echo "PASS: a third-party client plugin injected \`connection\`, completed a /api round trip,"
-echo "      and reached the turnscope host face from the page"
+echo "      reached the turnscope host face from the page, and rendered its panel"
+echo "      behind a translated tab in the real conversation view"
