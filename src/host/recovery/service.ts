@@ -30,7 +30,7 @@ import type {
 } from '../../shared/contracts/api.ts'
 import { envelope } from '../../shared/contracts/api.ts'
 import type { TurnscopeApiEnvelope } from '../../shared/contracts/api.ts'
-import type { SafetyVerdict, TurnRecord, WorkspaceRecord } from '../domain/types.ts'
+import type { CheckpointPathState, SafetyVerdict, TurnRecord, WorkspaceRecord } from '../domain/types.ts'
 import { planRecovery, type PlannerPathSnapshot } from './planner.ts'
 import { rollbackUnfinished } from './runner/rollback.ts'
 import { resolveRecoveryRoot, resolveDryRunRoot } from './runner/paths.ts'
@@ -152,6 +152,7 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
   const snapshotPaths = async (
     paths: readonly string[],
     workspace: WorkspaceRecord,
+    checkpointPathsByPath: ReadonlyMap<string, CheckpointPathState>,
   ): Promise<readonly PlannerPathSnapshot[]> => {
     return Promise.all(
       paths.map(async path => {
@@ -159,12 +160,13 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         const currentContentHash = existsNow
           ? await worktree.hashCurrent(workspace.repoRoot, path)
           : undefined
+        const cp = checkpointPathsByPath.get(path)
         return {
           path,
           staged: false,
           currentContentHash,
-          beforeBlobRef: undefined,
-          afterBlobRef: undefined,
+          beforeBlobRef: cp?.blobRef,
+          afterBlobRef: cp?.blobRef,
           existedBefore: existsNow,
           existsNow,
         }
@@ -202,7 +204,9 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
       }
       const verdict: SafetyVerdict = verdictOrError
       const pathSet = new Set(fileChanges.map(c => c.path))
-      const paths = await snapshotPaths([...pathSet], workspace)
+      for (const cp of checkpointPaths) pathSet.add(cp.path)
+      const checkpointPathsByPath = new Map(checkpointPaths.map(cp => [cp.path, cp]))
+      const paths = await snapshotPaths([...pathSet], workspace, checkpointPathsByPath)
 
       const plan = planRecovery({
         turnId: turn.id,

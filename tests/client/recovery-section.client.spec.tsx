@@ -16,6 +16,7 @@ import { cleanup, render } from '@testing-library/react'
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
 import { RecoverySection } from '../../src/client/RecoverySection.tsx'
 import type { RecoveryFeed } from '../../src/client/recovery-feeds.ts'
+import type { SafetyVerdict } from '../../src/host/domain/types.ts'
 
 const t = (key: string) => key
 
@@ -48,16 +49,31 @@ describe('RecoverySection', () => {
   })
 
   it('renders the operation list when the plan is present', () => {
-    const op = { kind: 'restore', path: 'src/a.ts', expectedCurrentHash: 'h', targetBlobRef: 'b', afterBlobRef: 'b' }
+    const op = { kind: 'restore' as const, path: 'src/a.ts', expectedCurrentHash: 'h', targetBlobRef: 'b', afterBlobRef: 'b' }
+    const verdict: SafetyVerdict = {
+      schemaVersion: 3 as const,
+      id: 'v1',
+      turnId: 't',
+      level: 'SAFE',
+      reasons: [],
+      allowedActions: ['PREVIEW_REWIND', 'REWIND'],
+      recommendedAction: 'REWIND',
+      evaluatedAt: 0,
+      engineVersion: 1,
+    }
     render(<RecoverySection t={t} feed={makeFeed({
       plan: {
         kind: 'value',
         value: {
           plan: {
             id: 'plan-1',
+            schemaVersion: 3 as const,
             turnId: 't',
             evaluationId: 'e',
-            status: 'previewed',
+            verdict,
+            stateHash: 'sha256:0'.repeat(8),
+            beforeCheckpointId: 'cp-1',
+            status: 'previewed' as const,
             operations: [op],
             createdAt: 0,
             expiresAt: 0,
