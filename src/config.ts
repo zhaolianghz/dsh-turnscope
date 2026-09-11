@@ -7,6 +7,16 @@ export interface TurnscopeConfig {
   readonly retentionDays: number
   readonly retentionBytes: number
   readonly maxOutputBytes: number
+  /**
+   * The largest file whose bytes are copied into a checkpoint.
+   *
+   * Above it the file is still fingerprinted, so drift is still detectable, but
+   * its contents are not stored and the checkpoint drops to `partial`. The
+   * budget exists because a checkpoint is taken twice per turn on whatever the
+   * user happens to have dirty, and a single stray build artifact should not
+   * turn that into a multi-gigabyte copy.
+   */
+  readonly maxBlobBytes: number
   readonly ignorePaths: readonly string[]
 }
 
@@ -17,6 +27,7 @@ export const DEFAULT_CONFIG: TurnscopeConfig = Object.freeze({
   retentionDays: 30,
   retentionBytes: 104_857_600,
   maxOutputBytes: 32_768,
+  maxBlobBytes: 1_048_576,
   ignorePaths: Object.freeze([]),
 })
 
@@ -99,6 +110,7 @@ export function resolveConfig(input: unknown): TurnscopeConfig {
     retentionDays: readPositiveInteger(source, 'retentionDays', DEFAULT_CONFIG.retentionDays),
     retentionBytes: readPositiveInteger(source, 'retentionBytes', DEFAULT_CONFIG.retentionBytes),
     maxOutputBytes: readPositiveInteger(source, 'maxOutputBytes', DEFAULT_CONFIG.maxOutputBytes),
+    maxBlobBytes: readPositiveInteger(source, 'maxBlobBytes', DEFAULT_CONFIG.maxBlobBytes),
     ignorePaths: readStringArray(source, 'ignorePaths', DEFAULT_CONFIG.ignorePaths),
   })
 }

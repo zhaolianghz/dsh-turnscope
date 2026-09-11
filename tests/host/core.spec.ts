@@ -8,10 +8,12 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { apply, name } from '../../src/index.ts'
+import { checkpointIdFor } from '../../src/host/domain/ids.ts'
 import { createRepository } from '../../src/host/storage/repository.ts'
 import type { TraceRepository } from '../../src/host/storage/repository.ts'
 import { openIndex } from '../../src/host/storage/sqlite-index.ts'
 import { resolveIndexPath } from '../../src/host/core.ts'
+import { commitAll, createRepo, writeRepoFile } from './git/support.ts'
 
 const SECRET = `sk-${'abcdefghijklmnopqrstuvwx'}`
 
@@ -37,10 +39,13 @@ const tempRoot = async (): Promise<string> => {
  * `fiber.await()` resolves only once the plugin callback settled and rethrows
  * anything it threw, so awaiting it *is* the "the plugin loaded" assertion.
  */
-const mount = async (dataDir: string): Promise<{ ctx: Context; fiber: Fiber }> => {
+const mount = async (
+  dataDir: string,
+  config: Record<string, unknown> = {},
+): Promise<{ ctx: Context; fiber: Fiber }> => {
   const ctx = new Context()
   await ctx.plugin(SessionStore).await()
-  const fiber = ctx.plugin({ name, apply }, { dataDir })
+  const fiber = ctx.plugin({ name, apply }, { dataDir, ...config })
   await fiber.await()
   return { ctx, fiber }
 }
@@ -200,5 +205,73 @@ describe('trace core over a real session store', () => {
     await settle()
     expect(await readFile(dbPath)).toEqual(foreign)
     await fiber.dispose()
+  })
+
+  it('turns a live turn into a verdict, end to end', async () => {
+    // The one test that exercises the whole product path: a real harness session
+    // on a real repository, the recorder wiring from `core.ts`, and the answer
+    // read back by a second handle the way the UI will read it.
+    const repoRoot = await createRepo()
+    roots.push(repoRoot)
+    const dataDir = join(repoRoot, '.turnscope-data')
+
+    // The plugin's own files live inside the repository, so they have to be
+    // invisible to `git status` twice over: gitignored, and named in the
+    // plugin's own ignore list. Without both, the index would observe itself
+    // writing and report it as a change the agent made.
+    await writeFile(join(repoRoot, '.gitignore'), '.turnscope-data/\n')
+    await writeRepoFile(repoRoot, 'app.ts', 'version 1\n')
+    await commitAll(repoRoot, 'add app')
+
+    const { ctx, fiber } = await mount(dataDir, { ignorePaths: ['.turnscope-data'] })
+    const session = ctx.sessions.create(SessionId('s-live'), { meta: { cwd: repoRoot } })
+    session.append('turn/start', { turn: 0 })
+    session.append('step/start', { turn: 0, step: 0 })
+    session.append('tool/call', {
+      turn: 0,
+      step: 0,
+      callId: CallId('c1'),
+      name: 'write_file',
+      arguments: '{"path":"app.ts"}',
+    })
+
+    const { repo, close } = await reader(dataDir)
+    try {
+      // Wait for the `PRE` checkpoint instead of sleeping: the recorder processes
+      // events off the session's own callback, so without this the write below
+      // can land before the "before" state was taken.
+      const pre = await waitFor(() => repo.getCheckpoint(checkpointIdFor('s-live:turn:0', 'pre')))
+      expect(pre?.completeness).toBe('complete')
+
+      await writeRepoFile(repoRoot, 'app.ts', 'version 2, by the agent\n')
+      session.append(
+        'tool/result',
+        {
+          turn: 0,
+          step: 0,
+          message: createToolResultMessage({
+            callId: CallId('c1'),
+            content: [{ type: 'text', text: 'wrote app.ts' }],
+            isError: false,
+          }),
+        },
+        { surfaceOp: 'append' },
+      )
+      session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+
+      const verdict = await waitFor(() => repo.getLatestVerdict('s-live:turn:0'))
+      expect(verdict?.level).toBe('SAFE')
+      expect(verdict?.allowedActions).toContain('REWIND')
+
+      const changes = await repo.listFileChanges('s-live:turn:0')
+      expect(changes.map(change => change.path)).toEqual(['app.ts'])
+      expect(changes[0]).toMatchObject({ attribution: 'AGENT', kind: 'modified' })
+
+      // The plugin's own index is not part of the user's change set.
+      expect(await repo.getCheckpoint(checkpointIdFor('s-live:turn:0', 'post'))).toBeDefined()
+    } finally {
+      await close()
+      await fiber.dispose()
+    }
   })
 })

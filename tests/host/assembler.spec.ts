@@ -14,6 +14,7 @@ import type { AssemblerOutput } from '../../src/host/adapters/dsh/assembler.ts'
 import { describeLabel, normalizeEvent } from '../../src/host/adapters/dsh/normalize.ts'
 import type { RawSessionEvent } from '../../src/host/adapters/dsh/normalize.ts'
 import { createRecorder } from '../../src/host/core.ts'
+import type { WorkspaceResolution } from '../../src/host/core.ts'
 import type { TraceSink } from '../../src/host/core.ts'
 
 const TIME = 1_789_042_697_930
@@ -390,7 +391,7 @@ afterEach(async () => {
 
 const harness = async (
   config: unknown = {},
-  resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>,
+  resolveWorkspace?: (cwd: string | undefined) => Promise<WorkspaceResolution>,
 ): Promise<Harness> => {
   const root = await mkdtemp(join(tmpdir(), 'turnscope-assembler-'))
   roots.push(root)
@@ -403,7 +404,7 @@ const harness = async (
     sink,
     store,
     diagnostics,
-    ...(resolveWorkspaceId === undefined ? {} : { resolveWorkspaceId }),
+    ...(resolveWorkspace === undefined ? {} : { resolveWorkspace }),
   })
   return { sink, diagnostics, config: resolved, store, recorder }
 }
@@ -533,7 +534,7 @@ describe('workspace resolution', () => {
 
   it('records the resolved repository identity rather than a cwd hash', async () => {
     const resolved = `sha256:${'a'.repeat(64)}`
-    const h = await harness({}, async () => resolved)
+    const h = await harness({}, async cwd => ({ workspaceId: resolved, repoRoot: cwd }))
     await playFrom(h, '/tmp/repo', turnStart(0, 0))
 
     expect(h.sink.turns.get('s-1:turn:0')?.workspaceId).toBe(resolved)
@@ -541,9 +542,9 @@ describe('workspace resolution', () => {
 
   it('resolves a working directory once, however many events arrive', async () => {
     let calls = 0
-    const h = await harness({}, async () => {
+    const h = await harness({}, async cwd => {
       calls += 1
-      return `sha256:${'b'.repeat(64)}`
+      return { workspaceId: `sha256:${'b'.repeat(64)}`, repoRoot: cwd }
     })
     await playFrom(h, '/tmp/repo', turnStart(0, 0))
     await playFrom(h, '/tmp/repo', userMessage(1))

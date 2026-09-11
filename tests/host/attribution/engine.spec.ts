@@ -344,6 +344,29 @@ describe('uncertainty, and failing towards it', () => {
 
     expect(set.changes).toEqual([])
   })
+
+  it('never hands back a change it could not vouch for as the agent\'s', () => {
+    // §10.5: `low` is not an actionable confidence. Here the file is gone at
+    // POST and neither end was ever fingerprinted, so the only thing observed is
+    // that a path stopped being present. Reporting `AGENT`/`deleted` would let a
+    // rewind be offered on the strength of a guess about content nobody read.
+    const set = turn({
+      prePaths: [state('src/a.ts', 'clean', undefined)],
+      postPaths: [state('src/a.ts', 'deleted', undefined)],
+    })
+
+    expect(only(set.changes)).toMatchObject({ attribution: 'UNCERTAIN', confidence: 'low' })
+  })
+
+  it('keeps a well-observed change attributable at medium confidence', () => {
+    // The counterweight to the rule above: only `low` is barred. A modification
+    // whose before-state was clean (so HEAD is the before) is genuinely known,
+    // and calling it `UNCERTAIN` would make every untouched-at-PRE file look
+    // like a mystery.
+    const set = turn({ postPaths: [state('src/a.ts', 'modified', 'sha256:b')] })
+
+    expect(only(set.changes)).toMatchObject({ attribution: 'AGENT', confidence: 'medium' })
+  })
 })
 
 describe('what does not belong in the change set', () => {

@@ -372,6 +372,23 @@ interface BuildArgs {
   readonly extraRefs?: readonly string[] | undefined
 }
 
+/**
+ * `docs/ARCHITECTURE.md §10.5`: a `low`-confidence attribution is not enough to
+ * act on. Handing back `AGENT` with `confidence: 'low'` would let a caller that
+ * only reads the attribution treat a guess as a finding — and the safety engine
+ * would have to re-derive the same rule from a second field, in a second place,
+ * with a chance of disagreeing.
+ *
+ * So the rule lives here, at the single point where a change is constructed:
+ * a change we cannot vouch for is `UNCERTAIN`, and `AGENT`/`DRIFT` always imply
+ * a confidence a caller may act on. Only those two are demoted — `BASELINE` and
+ * `UNCERTAIN` are informational, and `low` is the honest word for them.
+ */
+function attributionFor(args: BuildArgs): Attribution {
+  const unsupported = args.attribution === 'AGENT' || args.attribution === 'DRIFT'
+  return unsupported && args.confidence === 'low' ? 'UNCERTAIN' : args.attribution
+}
+
 function build(ctx: PathContext, args: BuildArgs): FileChange {
   const refs = new Set<string>(args.extraRefs ?? [])
   if (args.before?.seen) {
@@ -400,7 +417,7 @@ function build(ctx: PathContext, args: BuildArgs): FileChange {
     turnId: ctx.turnId,
     path: ctx.path,
     kind: args.kind,
-    attribution: args.attribution,
+    attribution: attributionFor(args),
     confidence: args.confidence,
     baseline: args.baseline,
     evidenceRefs: [...refs].sort(),

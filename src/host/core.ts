@@ -5,8 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { TurnscopeConfig } from '../config.ts'
 import type { Diagnostics } from '../diagnostics.ts'
 import { SCHEMA_VERSION } from './domain/types.ts'
-import { transitionTurn } from './domain/turn-state.ts'
-import type { TurnRecord } from './domain/types.ts'
+import { isTerminal, transitionTurn } from './domain/turn-state.ts'
+import type { TurnRecord, TurnStatus } from './domain/types.ts'
 import { subscribeSessionEvents } from './adapters/dsh/subscribe.ts'
 import { createTurnAssembler } from './adapters/dsh/assembler.ts'
 import { normalizeEvent } from './adapters/dsh/normalize.ts'
@@ -20,6 +20,8 @@ import type { TraceRepository } from './storage/repository.ts'
 import { createExecFileRunner } from './git/command-runner.ts'
 import { createGitPort } from './git/git-port.ts'
 import { resolveRepositoryIdentity } from './git/identity.ts'
+import { createTurnInspector } from './inspection/inspector.ts'
+import type { TurnInspector } from './inspection/types.ts'
 
 /** Index file name under the plugin's private data root, per `docs/ARCHITECTURE.md §4.2`. */
 export const INDEX_FILENAME = 'index.sqlite3'
@@ -40,12 +42,25 @@ export interface SessionIdentity {
  * The slice of {@link TraceRepository} the recorder writes through.
  *
  * Narrow on purpose: the recorder is the only writer, and a test can stand in
- * for a repository with four methods instead of sixteen.
+ * for a repository with a handful of methods instead of sixteen.
  */
 export type TraceSink = Pick<
   TraceRepository,
   'getTurn' | 'upsertTurn' | 'appendActivity' | 'putObjectRecord'
 >
+
+/**
+ * Where a session's working directory belongs.
+ *
+ * The repository root is optional because a working directory need not be in a
+ * repository. When it is absent the recorder still captures, and the capture
+ * records "not a git worktree" — which the safety rules read as `S009` rather
+ * than as a gap.
+ */
+export interface WorkspaceResolution {
+  readonly workspaceId: string
+  readonly repoRoot: string | undefined
+}
 
 /** What the recorder needs from its environment. */
 export interface RecorderOptions {
@@ -54,16 +69,26 @@ export interface RecorderOptions {
   readonly store: ObjectStore
   readonly diagnostics: Diagnostics
   /**
+   * The turn-boundary pipeline, when the host has one.
+   *
+   * Injected rather than built here because building it means spawning Git, and
+   * the recorder is unit-tested without a repository. Absent, turns are still
+   * recorded and simply never inspected — the recorder degrades to what Phase C
+   * was, which is the honest thing for a host that cannot observe a workspace.
+   */
+  readonly inspector?: TurnInspector | undefined
+  /**
    * Resolve the workspace a session's `cwd` belongs to.
    *
-   * Injected rather than built in because resolving a real repository identity
-   * spawns Git, and the recorder is unit-tested without a repository. Omitted,
-   * it falls back to the opaque cwd hash below — which is the honest answer when
-   * the working directory is not a repository, and is also what the resolver
-   * itself falls back to. It is never allowed to throw: see
-   * {@link createRecorder}.
+   * Injected for the same reason as {@link inspector}: resolving a real
+   * repository identity spawns Git. Omitted, it falls back to the opaque cwd
+   * hash below — which is the honest answer when the working directory is not a
+   * repository, and is also what the resolver itself falls back to. It is never
+   * allowed to throw: see {@link createRecorder}.
    */
-  readonly resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>
+  readonly resolveWorkspace?: (
+    cwd: string | undefined,
+  ) => Promise<WorkspaceResolution>
 }
 
 /** Accepts events and persists the records they imply. */
@@ -104,12 +129,12 @@ const describe = (error: unknown): string =>
  * `docs/PRD.md` forbids.
  */
 export function createRecorder(options: RecorderOptions): Recorder {
-  const { config, sink, store, diagnostics, resolveWorkspaceId } = options
+  const { config, sink, store, diagnostics, inspector, resolveWorkspace: resolve } = options
   const assembler = createTurnAssembler()
   let queue: Promise<void> = Promise.resolve()
 
   /**
-   * Workspace ids already resolved, keyed by cwd.
+   * Workspaces already resolved, keyed by cwd.
    *
    * The memo is what keeps repository resolution off the per-event path: a
    * session emits hundreds of events from one cwd, and resolving the identity
@@ -118,33 +143,34 @@ export function createRecorder(options: RecorderOptions): Recorder {
    * mid-session, and a broken `git` should be reported once rather than per
    * event.
    */
-  const workspaceIds = new Map<string, Promise<string>>()
+  const workspaces = new Map<string, Promise<WorkspaceResolution>>()
 
   /**
-   * Resolve a session's workspace id, never throwing.
+   * Resolve a session's workspace, never throwing.
    *
    * A resolver that rejects would take the whole event with it, and the event's
    * workspace is bookkeeping rather than evidence, so a failure degrades to the
-   * cwd hash and a diagnostic instead of losing the turn.
+   * cwd hash and a diagnostic instead of losing the turn. The repository root is
+   * dropped along with it: the fallback cannot claim to know one.
    */
-  const resolveWorkspace = (cwd: string | undefined): Promise<string> => {
+  const resolveWorkspace = (cwd: string | undefined): Promise<WorkspaceResolution> => {
     const key = cwd ?? ''
-    const cached = workspaceIds.get(key)
+    const cached = workspaces.get(key)
     if (cached !== undefined) return cached
-    const pending = (async (): Promise<string> => {
-      if (resolveWorkspaceId === undefined) return workspaceIdFor(cwd)
+    const pending = (async (): Promise<WorkspaceResolution> => {
+      if (resolve === undefined) return { workspaceId: workspaceIdFor(cwd), repoRoot: cwd }
       try {
-        return await resolveWorkspaceId(cwd)
+        return await resolve(cwd)
       } catch (error) {
         diagnostics.record({
           at: Date.now(),
           code: 'trace.workspace-unresolved',
           message: `${key || '(no cwd)'}: ${describe(error)}`,
         })
-        return workspaceIdFor(cwd)
+        return { workspaceId: workspaceIdFor(cwd), repoRoot: cwd }
       }
     })()
-    workspaceIds.set(key, pending)
+    workspaces.set(key, pending)
     return pending
   }
 
@@ -189,24 +215,69 @@ export function createRecorder(options: RecorderOptions): Recorder {
    * and the end timestamp — so the counts this layer legitimately updates still
    * flow through. Reading first is what makes this correct across a restart,
    * where the assembler has no memory of a turn it did not close.
+   *
+   * The status read on the way in is returned rather than discarded: it is the
+   * only evidence of whether this record *opened* or *closed* the turn, and the
+   * inspector needs exactly that and nothing else to decide which checkpoint to
+   * take. `undefined` means the index had never heard of this turn.
    */
-  const writeTurn = async (record: TurnRecord): Promise<void> => {
+  const writeTurn = async (record: TurnRecord): Promise<TurnStatus | undefined> => {
     const stored = await sink.getTurn(record.id)
     if (stored === undefined) {
       await sink.upsertTurn(record)
-      return
+      return undefined
     }
     const status = transitionTurn(stored.status, record.status)
     if (status === record.status) {
       await sink.upsertTurn(record)
-      return
+    } else {
+      await sink.upsertTurn({ ...record, status, endedAt: stored.endedAt })
     }
-    await sink.upsertTurn({ ...record, status, endedAt: stored.endedAt })
+    return stored.status
+  }
+
+  /**
+   * Record one turn, then let the inspector look at the boundary it may have
+   * just crossed.
+   *
+   * The two are deliberately not interleaved: the turn row is written first so
+   * that a capture which fails still leaves a turn the user can see. An
+   * inspection failure is a diagnostic and never an `await` that can lose the
+   * turn, because the turn is the evidence and the verdict is a reading of it.
+   */
+  const writeAndObserveTurn = async (
+    record: TurnRecord,
+    workspace: WorkspaceResolution,
+  ): Promise<void> => {
+    const previous = await writeTurn(record)
+    if (inspector === undefined) return
+    const repoRoot = workspace.repoRoot
+    if (repoRoot === undefined) return
+    try {
+      const result = await inspector.observe(
+        record,
+        { workspaceId: workspace.workspaceId, repoRoot },
+        previous,
+      )
+      if (result !== undefined) {
+        diagnostics.record({
+          at: Date.now(),
+          code: 'trace.turn-inspected',
+          message: `${record.id}: ${result.verdict.level} (${result.verdict.reasons.length} reason(s))`,
+        })
+      }
+    } catch (error) {
+      diagnostics.record({
+        at: Date.now(),
+        code: 'trace.turn-inspection-failed',
+        message: `${record.id}: ${describe(error)}`,
+      })
+    }
   }
 
   const handle = async (session: SessionIdentity, event: RawSessionEvent): Promise<void> => {
-    const workspaceId = await resolveWorkspace(session.cwd)
-    const normalized = normalizeEvent(session.id, workspaceId, event, config)
+    const workspace = await resolveWorkspace(session.cwd)
+    const normalized = normalizeEvent(session.id, workspace.workspaceId, event, config)
     if (normalized === undefined) {
       // Unknown or unusable upstream event: counted by type and ignored.
       if (typeof event.type === 'string') diagnostics.recordIgnoredKind(event.type)
@@ -242,8 +313,13 @@ export function createRecorder(options: RecorderOptions): Recorder {
       })
     }
 
-    for (const turn of output.turns) await writeTurn(turn)
+    // Evidence before summary. A turn row carries `activityCount`, so writing it
+    // first would let a reader see a completed turn that claims activities which
+    // are not in the table yet — and with an inspection spawning Git between the
+    // two writes, that window is no longer microseconds wide. The activities are
+    // the facts; the row is a reading of them.
     for (const activity of output.activities) await sink.appendActivity(activity)
+    for (const turn of output.turns) await writeAndObserveTurn(turn, workspace)
   }
 
   const record = (session: SessionIdentity, event: RawSessionEvent): Promise<void> => {
@@ -304,23 +380,39 @@ export async function startTraceCore(
       const repository = createRepository(handle)
       const store = createObjectStore(root)
       const git = createGitPort(createExecFileRunner())
+      // The real workspace is the repository root, not the working directory:
+      // a session started in a subdirectory, or in a linked worktree, must land
+      // in the same workspace as every other session on that repository, or
+      // retention and history would each see only part of it. A directory that
+      // is not a repository keeps the opaque cwd hash and is handed to the
+      // inspector as-is, so the capture can record "not a git worktree" — which
+      // is `S009`'s evidence, not a hole in the pipeline.
+      const resolveWorkspace = async (
+        cwd: string | undefined,
+      ): Promise<WorkspaceResolution> => {
+        const identity =
+          cwd === undefined || cwd.length === 0
+            ? undefined
+            : await resolveRepositoryIdentity(git, cwd)
+        return {
+          workspaceId: identity?.rootIdentity ?? workspaceIdFor(cwd),
+          repoRoot: identity?.repoRoot ?? cwd,
+        }
+      }
+      const inspector = createTurnInspector({
+        git,
+        store,
+        sink: repository,
+        maxBlobBytes: config.maxBlobBytes,
+        ignorePaths: config.ignorePaths,
+      })
       const recorder = createRecorder({
         config,
         sink: repository,
         store,
         diagnostics,
-        // The real workspace is the repository root, not the working directory:
-        // a session started in a subdirectory, or in a linked worktree, must
-        // land in the same workspace as every other session on that repository,
-        // or retention and history would each see only part of it. A directory
-        // that is not a repository keeps the opaque cwd hash.
-        resolveWorkspaceId: async cwd => {
-          const identity =
-            cwd === undefined || cwd.length === 0
-              ? undefined
-              : await resolveRepositoryIdentity(git, cwd)
-          return identity?.rootIdentity ?? workspaceIdFor(cwd)
-        },
+        inspector,
+        resolveWorkspace,
       })
       const unsubscribe = subscribeSessionEvents(ctx, (session, event) => {
         void recorder.record({ id: session.id, cwd: session.header.cwd }, event)

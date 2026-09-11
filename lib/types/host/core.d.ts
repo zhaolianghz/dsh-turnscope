@@ -4,6 +4,7 @@ import type { Diagnostics } from '../diagnostics.ts';
 import type { RawSessionEvent } from './adapters/dsh/normalize.ts';
 import type { ObjectStore } from './storage/object-store.ts';
 import type { TraceRepository } from './storage/repository.ts';
+import type { TurnInspector } from './inspection/types.ts';
 /** Index file name under the plugin's private data root, per `docs/ARCHITECTURE.md §4.2`. */
 export declare const INDEX_FILENAME = "index.sqlite3";
 /** The plugin-private index path for an already-resolved data root. */
@@ -18,9 +19,21 @@ export interface SessionIdentity {
  * The slice of {@link TraceRepository} the recorder writes through.
  *
  * Narrow on purpose: the recorder is the only writer, and a test can stand in
- * for a repository with four methods instead of sixteen.
+ * for a repository with a handful of methods instead of sixteen.
  */
 export type TraceSink = Pick<TraceRepository, 'getTurn' | 'upsertTurn' | 'appendActivity' | 'putObjectRecord'>;
+/**
+ * Where a session's working directory belongs.
+ *
+ * The repository root is optional because a working directory need not be in a
+ * repository. When it is absent the recorder still captures, and the capture
+ * records "not a git worktree" — which the safety rules read as `S009` rather
+ * than as a gap.
+ */
+export interface WorkspaceResolution {
+    readonly workspaceId: string;
+    readonly repoRoot: string | undefined;
+}
 /** What the recorder needs from its environment. */
 export interface RecorderOptions {
     readonly config: TurnscopeConfig;
@@ -28,16 +41,24 @@ export interface RecorderOptions {
     readonly store: ObjectStore;
     readonly diagnostics: Diagnostics;
     /**
+     * The turn-boundary pipeline, when the host has one.
+     *
+     * Injected rather than built here because building it means spawning Git, and
+     * the recorder is unit-tested without a repository. Absent, turns are still
+     * recorded and simply never inspected — the recorder degrades to what Phase C
+     * was, which is the honest thing for a host that cannot observe a workspace.
+     */
+    readonly inspector?: TurnInspector | undefined;
+    /**
      * Resolve the workspace a session's `cwd` belongs to.
      *
-     * Injected rather than built in because resolving a real repository identity
-     * spawns Git, and the recorder is unit-tested without a repository. Omitted,
-     * it falls back to the opaque cwd hash below — which is the honest answer when
-     * the working directory is not a repository, and is also what the resolver
-     * itself falls back to. It is never allowed to throw: see
-     * {@link createRecorder}.
+     * Injected for the same reason as {@link inspector}: resolving a real
+     * repository identity spawns Git. Omitted, it falls back to the opaque cwd
+     * hash below — which is the honest answer when the working directory is not a
+     * repository, and is also what the resolver itself falls back to. It is never
+     * allowed to throw: see {@link createRecorder}.
      */
-    readonly resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>;
+    readonly resolveWorkspace?: (cwd: string | undefined) => Promise<WorkspaceResolution>;
 }
 /** Accepts events and persists the records they imply. */
 export interface Recorder {
