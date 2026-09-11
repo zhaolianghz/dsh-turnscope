@@ -178,4 +178,65 @@ describe('source invariants', () => {
         .filter(file => /node:fs|node:child_process|execFile/.test(file.text)),
     ).toEqual([])
   })
+
+  it('V0.2 recovery code never spawns a process (no child_process in host/recovery)', async () => {
+    const files = await sources()
+    // The recovery runner is a pure file-IO walker: atomicWrite is rename + fsync,
+    // there is no `git apply`, no `git checkout`, no `git reset --hard`. A
+    // stray `execFile` here would mean the runner is silently talking to git,
+    // which is exactly what the spec §5.7 forbids.
+    const recoveryFiles = files.filter(file => file.path.startsWith('host/recovery/'))
+    expect(matching(recoveryFiles, /node:child_process|execFile/)).toEqual([])
+  })
+
+  it('V0.2 recovery code does not contain `reset --hard` / `checkout` / `--hard` literals', async () => {
+    const files = await sources()
+    // Spec §5.7: the runner does not call `git reset --hard`, `git checkout --`,
+    // or any destructive Git operation. A comment that explains why would
+    // itself match the pattern, so the guard runs against `withoutComments`.
+    const recoveryFiles = files.filter(file => file.path.startsWith('host/recovery/'))
+    expect(
+      matching(recoveryFiles, /\bgit\b\s+(reset|checkout)|reset --hard|--hard|checkout --/),
+    ).toEqual([])
+  })
+
+  it('V0.2 forbids `git worktree add` from the host tree (V0.3 boundary)', async () => {
+    const files = await sources()
+    // V0.3 introduces worktree creation, but only behind a port. Until that
+    // port exists, *any* `worktree add` literal in src/host is a regression:
+    // it would mean the runner is reaching into git outside the spike's
+    // contract.
+    expect(matching(files, /\bworktree\s+add\b/)).toEqual([])
+  })
+
+  it('V0.2 keeps raw file writes confined to the recovery runner', async () => {
+    const files = await sources()
+    // `fs.writeFile` (any alias) and `fs.rename*` are the two IO verbs the
+    // recovery runner needs to do atomic file replacement. Every other module
+    // that wants to write bytes has to go through an existing port (the
+    // workspace observer, the object store); a stray writeFile here would be
+    // a third writer the test matrix does not cover.
+    //
+    // Match the call shape (`writeFile(`, `rename(`, `renameSync(`) so
+    // identifier-substring false positives (CSS classes like `turnscope-rename`,
+    // locale keys like `renamed`) do not light up the guard.
+    const allowed = new Set([
+      'host/recovery/runner/apply.ts',
+      'host/recovery/runner/dryrun.ts',
+      'host/recovery/runner/journal.ts',
+      'host/recovery/runner/rollback.ts',
+      'host/storage/atomic.ts',
+      'host/storage/object-store.ts',
+      'host/storage/sqlite-index.ts',
+      'host/storage/schema.ts',
+    ])
+    const offenders = files
+      .filter(file => /\bwriteFile\s*\(|\brenameSync\s*\(|\brename\s*\(/.test(withoutComments(file.text)))
+      .filter(file => !allowed.has(file.path))
+      .map(file => file.path)
+    expect(offenders).toEqual([])
+    // Sanity: the allow-list is non-empty, so the guard is actually checking
+    // something.
+    expect(allowed.size).toBeGreaterThan(0)
+  })
 })
