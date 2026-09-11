@@ -17,6 +17,9 @@ import { resolveDataRoot } from './storage/paths.ts'
 import { openIndex } from './storage/sqlite-index.ts'
 import { createRepository } from './storage/repository.ts'
 import type { TraceRepository } from './storage/repository.ts'
+import { createExecFileRunner } from './git/command-runner.ts'
+import { createGitPort } from './git/git-port.ts'
+import { resolveRepositoryIdentity } from './git/identity.ts'
 
 /** Index file name under the plugin's private data root, per `docs/ARCHITECTURE.md §4.2`. */
 export const INDEX_FILENAME = 'index.sqlite3'
@@ -50,6 +53,17 @@ export interface RecorderOptions {
   readonly sink: TraceSink
   readonly store: ObjectStore
   readonly diagnostics: Diagnostics
+  /**
+   * Resolve the workspace a session's `cwd` belongs to.
+   *
+   * Injected rather than built in because resolving a real repository identity
+   * spawns Git, and the recorder is unit-tested without a repository. Omitted,
+   * it falls back to the opaque cwd hash below — which is the honest answer when
+   * the working directory is not a repository, and is also what the resolver
+   * itself falls back to. It is never allowed to throw: see
+   * {@link createRecorder}.
+   */
+  readonly resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>
 }
 
 /** Accepts events and persists the records they imply. */
@@ -63,13 +77,11 @@ export interface Recorder {
 const WORKSPACE_UNKNOWN = 'workspace:unknown'
 
 /**
- * A stable, opaque workspace id for one session.
+ * The fallback workspace id: an opaque hash of the session's `cwd`.
  *
- * The session's `cwd` is all this slice knows about where the work happened;
- * Task 7's workspace observation replaces this with a real repository identity
- * once the Git root is resolvable. Hashing rather than storing the path keeps
- * even the placeholder free of a user directory, matching
- * `WorkspaceRecord.repoRootHash`.
+ * Hashing rather than storing the path keeps even the placeholder free of a user
+ * directory, matching `WorkspaceRecord.repoRootHash`. It is used when the cwd is
+ * not a repository, where a real repository identity does not exist to be had.
  */
 function workspaceIdFor(cwd: string | undefined): string {
   if (typeof cwd !== 'string' || cwd.length === 0) return WORKSPACE_UNKNOWN
@@ -92,9 +104,49 @@ const describe = (error: unknown): string =>
  * `docs/PRD.md` forbids.
  */
 export function createRecorder(options: RecorderOptions): Recorder {
-  const { config, sink, store, diagnostics } = options
+  const { config, sink, store, diagnostics, resolveWorkspaceId } = options
   const assembler = createTurnAssembler()
   let queue: Promise<void> = Promise.resolve()
+
+  /**
+   * Workspace ids already resolved, keyed by cwd.
+   *
+   * The memo is what keeps repository resolution off the per-event path: a
+   * session emits hundreds of events from one cwd, and resolving the identity
+   * once per session is the difference between one `git` call and hundreds.
+   * Failure is cached too — a cwd that is not a repository will not become one
+   * mid-session, and a broken `git` should be reported once rather than per
+   * event.
+   */
+  const workspaceIds = new Map<string, Promise<string>>()
+
+  /**
+   * Resolve a session's workspace id, never throwing.
+   *
+   * A resolver that rejects would take the whole event with it, and the event's
+   * workspace is bookkeeping rather than evidence, so a failure degrades to the
+   * cwd hash and a diagnostic instead of losing the turn.
+   */
+  const resolveWorkspace = (cwd: string | undefined): Promise<string> => {
+    const key = cwd ?? ''
+    const cached = workspaceIds.get(key)
+    if (cached !== undefined) return cached
+    const pending = (async (): Promise<string> => {
+      if (resolveWorkspaceId === undefined) return workspaceIdFor(cwd)
+      try {
+        return await resolveWorkspaceId(cwd)
+      } catch (error) {
+        diagnostics.record({
+          at: Date.now(),
+          code: 'trace.workspace-unresolved',
+          message: `${key || '(no cwd)'}: ${describe(error)}`,
+        })
+        return workspaceIdFor(cwd)
+      }
+    })()
+    workspaceIds.set(key, pending)
+    return pending
+  }
 
   /**
    * Write a payload's bytes before the activity that references them.
@@ -153,7 +205,8 @@ export function createRecorder(options: RecorderOptions): Recorder {
   }
 
   const handle = async (session: SessionIdentity, event: RawSessionEvent): Promise<void> => {
-    const normalized = normalizeEvent(session.id, workspaceIdFor(session.cwd), event, config)
+    const workspaceId = await resolveWorkspace(session.cwd)
+    const normalized = normalizeEvent(session.id, workspaceId, event, config)
     if (normalized === undefined) {
       // Unknown or unusable upstream event: counted by type and ignored.
       if (typeof event.type === 'string') diagnostics.recordIgnoredKind(event.type)
@@ -250,7 +303,25 @@ export async function startTraceCore(
     try {
       const repository = createRepository(handle)
       const store = createObjectStore(root)
-      const recorder = createRecorder({ config, sink: repository, store, diagnostics })
+      const git = createGitPort(createExecFileRunner())
+      const recorder = createRecorder({
+        config,
+        sink: repository,
+        store,
+        diagnostics,
+        // The real workspace is the repository root, not the working directory:
+        // a session started in a subdirectory, or in a linked worktree, must
+        // land in the same workspace as every other session on that repository,
+        // or retention and history would each see only part of it. A directory
+        // that is not a repository keeps the opaque cwd hash.
+        resolveWorkspaceId: async cwd => {
+          const identity =
+            cwd === undefined || cwd.length === 0
+              ? undefined
+              : await resolveRepositoryIdentity(git, cwd)
+          return identity?.rootIdentity ?? workspaceIdFor(cwd)
+        },
+      })
       const unsubscribe = subscribeSessionEvents(ctx, (session, event) => {
         void recorder.record({ id: session.id, cwd: session.header.cwd }, event)
       })

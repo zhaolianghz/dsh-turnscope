@@ -18,4 +18,12 @@ export declare function activityIdFor(sessionId: string, seq: number): string;
  * checkpoint of the same turn cannot collide.
  */
 export declare function checkpointIdFor(turnId: string, phase: CheckpointPhase): string;
+/**
+ * `${checkpointId}:path:${path}` — one observed path of a checkpoint.
+ *
+ * A checkpoint and the fixes it observes are captured in one pass, so the path
+ * is part of the key: re-observing the same checkpoint rewrites its own rows
+ * rather than appending a second copy of the same file.
+ */
+export declare function checkpointPathIdFor(checkpointId: string, path: string): string;
 //# sourceMappingURL=ids.d.ts.map

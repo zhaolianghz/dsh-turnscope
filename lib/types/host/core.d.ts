@@ -27,6 +27,17 @@ export interface RecorderOptions {
     readonly sink: TraceSink;
     readonly store: ObjectStore;
     readonly diagnostics: Diagnostics;
+    /**
+     * Resolve the workspace a session's `cwd` belongs to.
+     *
+     * Injected rather than built in because resolving a real repository identity
+     * spawns Git, and the recorder is unit-tested without a repository. Omitted,
+     * it falls back to the opaque cwd hash below — which is the honest answer when
+     * the working directory is not a repository, and is also what the resolver
+     * itself falls back to. It is never allowed to throw: see
+     * {@link createRecorder}.
+     */
+    readonly resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>;
 }
 /** Accepts events and persists the records they imply. */
 export interface Recorder {

@@ -32,8 +32,57 @@ async function sourceFiles(dir: string = ROOT): Promise<readonly SourceFile[]> {
   return files
 }
 
+/**
+ * Remove comments while leaving string contents alone.
+ *
+ * Without this the guard cannot tell "here is the ban" from "here is code that
+ * breaks it": the comment in `host/git/git-port.ts` explaining why `-w` is
+ * absent would itself match the pattern for a `-w` write. A quote-aware scan is
+ * used rather than a regex so that a `//` inside a string literal — a URL, most
+ * often — is not mistaken for the start of a comment.
+ */
+const withoutComments = (text: string): string => {
+  let out = ''
+  let index = 0
+  let quote: string | undefined
+  while (index < text.length) {
+    const char = text[index]
+    const next = text[index + 1]
+    if (quote !== undefined) {
+      out += char
+      if (char === '\\') {
+        out += next ?? ''
+        index += 2
+        continue
+      }
+      if (char === quote) quote = undefined
+      index += 1
+      continue
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      out += char
+      index += 1
+      continue
+    }
+    if (char === '/' && next === '/') {
+      while (index < text.length && text[index] !== '\n') index += 1
+      continue
+    }
+    if (char === '/' && next === '*') {
+      index += 2
+      while (index < text.length && !(text[index] === '*' && text[index + 1] === '/')) index += 1
+      index += 2
+      continue
+    }
+    out += char
+    index += 1
+  }
+  return out
+}
+
 const matching = (files: readonly SourceFile[], pattern: RegExp): readonly string[] =>
-  files.filter(file => pattern.test(file.text)).map(file => file.path)
+  files.filter(file => pattern.test(withoutComments(file.text))).map(file => file.path)
 
 let cache: readonly SourceFile[] | undefined
 const sources = async (): Promise<readonly SourceFile[]> => (cache ??= await sourceFiles())

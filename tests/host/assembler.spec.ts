@@ -388,14 +388,23 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-const harness = async (config: unknown = {}): Promise<Harness> => {
+const harness = async (
+  config: unknown = {},
+  resolveWorkspaceId?: (cwd: string | undefined) => Promise<string>,
+): Promise<Harness> => {
   const root = await mkdtemp(join(tmpdir(), 'turnscope-assembler-'))
   roots.push(root)
   const store = createObjectStore(root)
   const sink = createFakeSink()
   const diagnostics = new Diagnostics()
   const resolved = resolveConfig(config)
-  const recorder = createRecorder({ config: resolved, sink, store, diagnostics })
+  const recorder = createRecorder({
+    config: resolved,
+    sink,
+    store,
+    diagnostics,
+    ...(resolveWorkspaceId === undefined ? {} : { resolveWorkspaceId }),
+  })
   return { sink, diagnostics, config: resolved, store, recorder }
 }
 
@@ -513,5 +522,48 @@ describe('recorder persistence', () => {
       h.recorder.record({ id: SESSION, cwd: undefined }, raw('turn/start', Number.NaN, { turn: 0 })),
     ).resolves.toBeUndefined()
     expect(h.diagnostics.snapshotIgnoredKinds().get('vendor/other')).toBe(1)
+  })
+})
+
+describe('workspace resolution', () => {
+  /** Play one event from a session that reports a working directory. */
+  const playFrom = async (h: Harness, cwd: string, event: RawSessionEvent): Promise<void> => {
+    await h.recorder.record({ id: SESSION, cwd }, event)
+  }
+
+  it('records the resolved repository identity rather than a cwd hash', async () => {
+    const resolved = `sha256:${'a'.repeat(64)}`
+    const h = await harness({}, async () => resolved)
+    await playFrom(h, '/tmp/repo', turnStart(0, 0))
+
+    expect(h.sink.turns.get('s-1:turn:0')?.workspaceId).toBe(resolved)
+  })
+
+  it('resolves a working directory once, however many events arrive', async () => {
+    let calls = 0
+    const h = await harness({}, async () => {
+      calls += 1
+      return `sha256:${'b'.repeat(64)}`
+    })
+    await playFrom(h, '/tmp/repo', turnStart(0, 0))
+    await playFrom(h, '/tmp/repo', userMessage(1))
+    await playFrom(h, '/tmp/repo', stepStart(0, 0, 2))
+
+    // Resolving a repository spawns Git; per-event resolution would be hundreds
+    // of processes per session.
+    expect(calls).toBe(1)
+  })
+
+  it('falls back to the opaque cwd hash when resolution fails', async () => {
+    const h = await harness({}, async () => {
+      throw new Error('git is not installed')
+    })
+    await playFrom(h, '/tmp/not-a-repo', turnStart(0, 0))
+
+    // The workspace is bookkeeping, not evidence: losing it must not lose the turn.
+    expect(h.sink.turns.get('s-1:turn:0')?.workspaceId).toMatch(/^workspace:[0-9a-f]{64}$/)
+    expect(
+      h.diagnostics.snapshot().some(entry => entry.code === 'trace.workspace-unresolved'),
+    ).toBe(true)
   })
 })

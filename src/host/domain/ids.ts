@@ -28,3 +28,14 @@ export function activityIdFor(sessionId: string, seq: number): string {
 export function checkpointIdFor(turnId: string, phase: CheckpointPhase): string {
   return `${turnId}:cp:${phase}`
 }
+
+/**
+ * `${checkpointId}:path:${path}` — one observed path of a checkpoint.
+ *
+ * A checkpoint and the fixes it observes are captured in one pass, so the path
+ * is part of the key: re-observing the same checkpoint rewrites its own rows
+ * rather than appending a second copy of the same file.
+ */
+export function checkpointPathIdFor(checkpointId: string, path: string): string {
+  return `${checkpointId}:path:${path}`
+}
