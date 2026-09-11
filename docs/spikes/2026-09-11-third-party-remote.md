@@ -2,7 +2,7 @@
 
 日期：2026-09-11
 基线：DSH `0.1.1-rc.2`（`@deepseek-ai/dsh`，全局安装）
-结论：**Host 侧可行且已实证；Client 侧剩一个注入问题，风险低但未实测**，由 Phase F 的 web boot 关闭。
+结论：**Host 侧可行且已实证；Client 侧已补证可行**（见文末「补证」），Phase F 走 remote 路线。
 
 ## 为什么这是个真问题
 
@@ -43,7 +43,7 @@ v0.2 的 V0.1 UI（Safety Badge / reasons / diff）全部依赖 host 计算的�
 
 顺带确认：DSH base bundle 已经挂载了 `typert`（registry）、`typert-loader`、`typert-gateway`（api-gateway），第三方不需要自带这套基础设施。
 
-## 仍未证明的部分
+## 仍未证明的部分（已于同日补证，见下节）
 
 **client 侧未实测。** 我按契约读到：
 
@@ -60,3 +60,49 @@ v0.2 的 V0.1 UI（Safety Badge / reasons / diff）全部依赖 host 计算的�
 - Phase F 的第一件事是**关闭上述残留风险**：往一个带 `dsh-web-app` 的隔离 profile 装包、boot web、从页面侧发起一次调用。若失败，再回退。
 - `TypertRemoteService` + 手写 descriptor 的封装应放进 `src/host/adapters/dsh/`，与 TECH §36 要求的兼容适配层合流——手写 descriptor 本来就是那一层该有的形状。
 - 本 spike 的 probe 测试保留为常驻契约测试：它钉住了我们对 DSH RPC 面的假设（§36 的适配层需要它）。
+
+---
+
+# 补证：client 侧实测（同日）
+
+残留风险是一个问题：**真实 web app 里，第三方 client 插件能否 `inject: ['connection']`，并通过它打到 `/api`。** 已实测关闭，方法固化为 `docs/spikes/client-remote-smoke/`。
+
+## 怎么做的
+
+不能做成 vitest 用例（需要真实 DSH 进程 + 真实浏览器），所以做成脚本：`run.sh` 建一个隔离 `DSH_HOME`（`$WORK` 内，`node_modules` 用软链复用已有 profile 的共享安装，不重装 ~150 个包），装一个**手写的**探针 client 插件（不进仓库的构建链，`dsh.client` 指向手写 bundle），boot web，再让 headless Chrome 打开页面，用 CDP（Node 22 自带 `WebSocket`，零依赖）读回探针写在页面上的结论。
+
+探针问的只有三件事，对应三层风险：
+
+1. 我们的包是否出现在**服务出去**的 `window.__DSH_BOOT__` 里——配置树里有只说明 loader 被要求加载，`__DSH_BOOT__` 才是浏览器真正拿到的东西；解析失败、缺 `./client` 导出、`platform` 不是 `web`，都会在配置树里有而在图里没有。
+2. `apply()` 是否真的跑起来——这是 `connection` 是否被注入的唯一证据。
+3. `connection.rpc.call('/api', …)` 是否**往返到真实 host 服务**——用一个必然业务失败的请求（不存在的 sessionId），因为「成功了但业务说没有」恰好证明请求走到了 host 并被那边校验，而不是在本地被答复。
+
+## 结果
+
+```
+entries: 44
+{"id":"@zhaolianghz/dsh-connection-probe","url":"/plugins/…/client.js?rev=…","inject":["@deepseek-ai/dsh-client-runtime"],"immediately":true}
+{"id":"@zhaolianghz/dsh-turnscope","url":"/plugins/…/client.js?rev=…","inject":["@deepseek-ai/dsh-client-locale","@deepseek-ai/dsh-client-runtime","@deepseek-ai/dsh-client-ui-conversation"]}
+
+PROBE: module loaded
+PROBE: apply() ran, so `connection` was injected
+PROBE: connection.rpc is object
+PROBE: rpc resolved -> {"ok":true,"value":{"ok":false,"error":{"code":"session-not-found","sessionId":"probe-session-that-does-not-exist"}}}
+PASS
+```
+
+三点直接结论：
+
+1. **第三方 client 条目会被发现、会被服务**。`ClientModuleRegistry.processOne` 扫的是 `ctx.loader.entries()` 里所有条目的 `dsh.client` 声明，没有第一方白名单。
+2. **`inject: ['connection']` 对第三方有效**。`connection` 是 `ctx.provide("connection", handle)` 出来的普通服务键，cordis 按服务键注入，不看包身份。
+3. **不需要 `ctx.remote` 那层类型糖**。`dsh.client.inject`（模块图顺序，写包名）与 cordis `inject`（服务键）是两件事；第三方只用后者 + `connection.rpc.call` 原语即可，路线 2 的「手写 descriptor」在 client 侧没有任何生成物需求。
+
+## 顺带否掉的一个做法
+
+`--dump-dom` + `--virtual-time-budget` 不可用：页面持有 websocket，虚拟时间永远不干，dump 永不发生（实测超时）。CDP 是唯一可用路径，这点也写进了 `drive.mjs` 的注释，免得下次再试一遍。
+
+## 对计划的影响（更新）
+
+- **Phase F 走 remote 路线，残留风险已关闭**，第二阶段分支不需要启用。
+- 这条证据无法进 CI，但可以重放：`bash docs/spikes/client-remote-smoke/run.sh`。HTTP 服务、探针、断言都在脚本里，改动 RPC 面假设时应重跑。
+- `run.sh` 只在 `$WORK` 内写文件；不新建也不修改 `~/.dsh/profiles/web`（早期探索确实临时建过 `~/.dsh/profiles/ts-smoke`，已删除，脚本改为在 `$WORK` 内完成）。
