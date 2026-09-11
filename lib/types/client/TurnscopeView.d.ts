@@ -5,14 +5,16 @@ import { type RecordedTurns } from './recorded-turns.ts';
 /** The props the view needs beyond what the slot framework hands it. */
 export interface TurnscopeViewProps {
     /**
-     * The host's verdicts for this session, absent while the answer is in flight.
+     * The host's rows for this session, absent while the first answer is in flight.
      *
      * A prop rather than a fetch inside the view so that the pure rendering can be
      * tested — and read — without a connection, a timer, or a resolved promise.
      */
     readonly recorded?: RecordedTurns | undefined;
+    /** Ask the host again. Absent in renders that are not wired to a host. */
+    readonly onRefresh?: (() => void) | undefined;
 }
-export declare function TurnscopeView({ useSession, t, recorded, }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps): import("react/jsx-runtime").JSX.Element;
+export declare function TurnscopeView({ useSession, t, recorded, onRefresh, }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps): import("react/jsx-runtime").JSX.Element;
 /**
  * Bind the view to a live host.
  *
