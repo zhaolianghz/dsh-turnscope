@@ -8,7 +8,7 @@
  * `TurnscopeView.tsx`), so adding a level or an action on the host side breaks the
  * client build instead of shipping a blank chip.
  */
-import type { SafetySummaryDto, TurnSummaryDto } from '../shared/contracts/api.ts'
+import type { GetDiffData, SafetySummaryDto, TurnSummaryDto } from '../shared/contracts/api.ts'
 import type { TurnscopeKey } from './locales.ts'
 import type { TurnStatus } from './turn-model.ts'
 import type { Freshness } from './freshness.ts'
@@ -39,6 +39,13 @@ export const ACTION_KEYS = {
   NONE: 'action.NONE',
 } as const satisfies Record<RecoveryAction, TurnscopeKey>
 
+export const ATTRIBUTION_KEYS = {
+  AGENT: 'attribution.AGENT',
+  BASELINE: 'attribution.BASELINE',
+  DRIFT: 'attribution.DRIFT',
+  UNCERTAIN: 'attribution.UNCERTAIN',
+} as const satisfies Record<Attribution, TurnscopeKey>
+
 export const EVIDENCE_KEYS = {
   complete: 'evidence.complete',
   partial: 'evidence.partial',
@@ -46,6 +53,7 @@ export const EVIDENCE_KEYS = {
 } as const satisfies Record<EvidenceCompleteness, TurnscopeKey>
 
 type HostTurnStatus = TurnSummaryDto['status']
+type Attribution = GetDiffData['diff']['attribution']
 
 /**
  * The host's status words, for the states the timeline cannot express.

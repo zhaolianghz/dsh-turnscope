@@ -20,20 +20,20 @@ describe('TurnDetailView', () => {
   })
 
   it('separates "the host has no such turn" from "the host could not be asked"', () => {
-    expect(show({ kind: 'missing' }).getByText('主进程没有该轮次的记录')).toBeTruthy()
+    expect(show({ kind: 'absent' }).getByText('主进程没有该轮次的记录')).toBeTruthy()
     const failed = show({ kind: 'failed', reason: 'turnscope: offline' })
     expect(failed.getByRole('note').textContent).toContain('turnscope: offline')
   })
 
   it('says the turn has not been judged instead of showing a verdict that does not exist', () => {
-    const view = show({ kind: 'loaded', detail: detail() })
+    const view = show({ kind: 'value', value: detail() })
     expect(view.getByText('主进程还没有评估该轮次的安全性')).toBeTruthy()
   })
 
   it('reports what each recorded change was, and how confident the attribution is', () => {
     const view = show({
-      kind: 'loaded',
-      detail: detail({
+      kind: 'value',
+      value: detail({
         changes: [
           change('src/a.ts'),
           change('src/b.ts', { kind: 'created', attribution: 'BASELINE', baseline: true }),
@@ -61,8 +61,8 @@ describe('TurnDetailView', () => {
   it('shows the verdict with its reasons, its evidence, and how old it is', () => {
     const view = show(
       {
-        kind: 'loaded',
-        detail: detail({
+        kind: 'value',
+        value: detail({
           summary: { ...detail().summary, evidenceCompleteness: 'partial' },
           safety: fullVerdict('FORK_ONLY', {
             recommendedAction: 'FORK',
@@ -103,8 +103,8 @@ describe('TurnDetailView', () => {
 
   it('shows commands and their outcomes, or says there were none', () => {
     const view = show({
-      kind: 'loaded',
-      detail: detail({
+      kind: 'value',
+      value: detail({
         commands: [command('pnpm test', { exitCode: 0, durationMs: 1200 }), command('pnpm lint')],
       }),
     })
@@ -118,7 +118,7 @@ describe('TurnDetailView', () => {
   })
 
   it('names each empty section, so that empty does not look like unread', () => {
-    const view = show({ kind: 'loaded', detail: detail() })
+    const view = show({ kind: 'value', value: detail() })
     expect(view.getByText('该轮次没有记录到命令')).toBeTruthy()
     expect(view.getByText('该轮次没有记录到文件变更')).toBeTruthy()
     expect(view.getByText('该轮次没有记录到验证命令')).toBeTruthy()
@@ -126,8 +126,8 @@ describe('TurnDetailView', () => {
 
   it('shows validation results as the host recorded them', () => {
     const view = show({
-      kind: 'loaded',
-      detail: detail({
+      kind: 'value',
+      value: detail({
         tests: [test({ kind: 'typecheck', status: 'failed', summary: '2 errors' }), test()],
       }),
     })
@@ -142,7 +142,7 @@ describe('TurnDetailView', () => {
     // `docs/PRD.md §14.3` wants the preview named before anything is written. The
     // honest V0.1 form of that is to name the write as absent, not to show a
     // disabled button that implies a future where it works.
-    const view = show({ kind: 'loaded', detail: detail() })
+    const view = show({ kind: 'value', value: detail() })
     expect(view.getByText('本版本不写入工作区，恢复动作由后续版本提供。')).toBeTruthy()
   })
 })

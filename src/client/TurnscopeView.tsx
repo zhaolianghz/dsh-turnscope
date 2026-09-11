@@ -3,15 +3,18 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { useCallback, useState } from 'react'
 import { TurnDetailView } from './TurnDetail.tsx'
 import { ACTION_KEYS, EVIDENCE_KEYS, FRESHNESS_KEYS, HOST_ONLY_STATUS_KEYS, LEVEL_KEYS, STATUS_KEYS } from './keys.ts'
+import { useFileDiffs, type FileDiffFeed } from './file-diffs.ts'
 import { freshnessOf } from './freshness.ts'
 import type { TurnscopeHostApi } from './host-api.ts'
 import { useRecordedTurns, type RecordedTurns } from './recorded-turns.ts'
 import { useTurnDetails, type TurnDetailFeed } from './turn-details.ts'
 import { deriveTurnModels } from './turn-model.ts'
 
-/** Everything the card needs to open a turn and say how old its verdict is. */
+/** Everything a card needs to open a turn, and a path inside it. */
 export interface TurnDetailWiring {
   readonly feed: TurnDetailFeed
+  /** Where a clicked path's diff comes from. */
+  readonly diffs: FileDiffFeed
   /** The clock for the detail's "evaluated …" label; see `age.ts`. */
   readonly now: number
 }
@@ -159,6 +162,7 @@ export function TurnscopeView({
               <TurnDetailView
                 t={t}
                 now={detail.now}
+                diffs={detail.diffs}
                 state={detail.feed.states.get(summary.turnId) ?? { kind: 'loading' }}
               />
             ) : null}
@@ -187,13 +191,14 @@ export function createTurnscopeView(host: TurnscopeHostApi) {
     const [generation, setGeneration] = useState(0)
     const recorded = useRecordedTurns(host, sessionId, generation)
     const details = useTurnDetails(host, generation)
+    const diffs = useFileDiffs(host, generation)
     const refresh = useCallback(() => setGeneration(current => current + 1), [])
     return (
       <TurnscopeView
         {...props}
         recorded={recorded.state}
         onRefresh={refresh}
-        detail={{ feed: details, now: Date.now() }}
+        detail={{ feed: details, diffs, now: Date.now() }}
       />
     )
   }

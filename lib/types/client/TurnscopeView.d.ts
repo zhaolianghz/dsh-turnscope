@@ -1,11 +1,14 @@
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots';
+import { type FileDiffFeed } from './file-diffs.ts';
 import type { TurnscopeHostApi } from './host-api.ts';
 import { type RecordedTurns } from './recorded-turns.ts';
 import { type TurnDetailFeed } from './turn-details.ts';
-/** Everything the card needs to open a turn and say how old its verdict is. */
+/** Everything a card needs to open a turn, and a path inside it. */
 export interface TurnDetailWiring {
     readonly feed: TurnDetailFeed;
+    /** Where a clicked path's diff comes from. */
+    readonly diffs: FileDiffFeed;
     /** The clock for the detail's "evaluated …" label; see `age.ts`. */
     readonly now: number;
 }

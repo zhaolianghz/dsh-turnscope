@@ -58,6 +58,25 @@ const CSS = `
 .turnscope-allowed{margin:0;display:flex;gap:6px}
 .turnscope-command,.turnscope-test{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
 .turnscope-test-summary{opacity:.9}
+.turnscope-path-button{font:inherit;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  color:inherit;background:none;cursor:pointer;padding:0;border:0;border-bottom:1px dotted currentColor}
+.turnscope-diff-toggle{font-size:.8em;opacity:.7}
+.turnscope-diff{display:grid;gap:8px;margin-top:8px;padding:8px;border-radius:6px;
+  border:1px solid var(--border-color,currentColor)}
+.turnscope-diff-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+.turnscope-diff-side{font-size:.85em;opacity:.8}
+.turnscope-diff-nonewline{margin-inline-start:6px}
+.turnscope-hunks{display:grid;gap:8px}
+.turnscope-hunk{display:grid;gap:2px}
+.turnscope-hunk-head,.turnscope-hunk-body{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85em}
+.turnscope-hunk-head{opacity:.75}
+.turnscope-hunk-body{margin:0;white-space:pre;overflow-x:auto}
+.turnscope-diff-line{display:block}
+/* The mark and the number are the meaning; nothing below relies on colour. */
+.turnscope-diff-mark{display:inline-block;width:1ch}
+.turnscope-diff-number{display:inline-block;width:5ch;text-align:end;padding-inline-end:1ch;opacity:.55}
+.turnscope-diff-note{margin:0;font-size:.9em;opacity:.85}
+.turnscope-diff-reason{font-weight:600}
 `
 
 let mountedStyle: HTMLStyleElement | null = null

@@ -13,8 +13,11 @@
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TurnDetailData } from '../shared/contracts/api.ts'
 import { ageOf, type AgeUnit } from './age.ts'
-import { ACTION_KEYS, EVIDENCE_KEYS, LEVEL_KEYS } from './keys.ts'
+import { ACTION_KEYS, ATTRIBUTION_KEYS, EVIDENCE_KEYS, LEVEL_KEYS } from './keys.ts'
 import type { TurnscopeKey } from './locales.ts'
+import type { FileDiffFeed } from './file-diffs.ts'
+import { diffKey } from './file-diffs.ts'
+import { DiffView } from './DiffView.tsx'
 import type { TurnDetailState } from './turn-details.ts'
 
 // Each vocabulary is read off the contract's own shape rather than restated, so
@@ -25,7 +28,6 @@ type TestRecord = TurnDetailData['tests'][number]
 type SafetyVerdict = NonNullable<TurnDetailData['safety']>
 type SafetyReason = SafetyVerdict['reasons'][number]
 type ChangeKind = FileChange['kind']
-type Attribution = FileChange['attribution']
 type ValidationKind = TestRecord['kind']
 type ValidationStatus = TestRecord['status']
 
@@ -36,13 +38,6 @@ const KIND_KEYS = {
   renamed: 'change.renamed',
   binary_changed: 'change.binary',
 } as const satisfies Record<ChangeKind, TurnscopeKey>
-
-const ATTRIBUTION_KEYS = {
-  AGENT: 'attribution.AGENT',
-  BASELINE: 'attribution.BASELINE',
-  DRIFT: 'attribution.DRIFT',
-  UNCERTAIN: 'attribution.UNCERTAIN',
-} as const satisfies Record<Attribution, TurnscopeKey>
 
 const VALIDATION_KEYS = {
   test: 'validation.test',
@@ -70,17 +65,20 @@ export interface TurnDetailProps {
   readonly state: TurnDetailState
   /** The clock, as an input. See `age.ts` for why it is not read here. */
   readonly now: number
+  /** Where a path's diff comes from. Absent when nothing is wired to a host. */
+  readonly diffs?: FileDiffFeed | undefined
 }
 
 export function TurnDetailView({
   state,
   now,
+  diffs,
   t,
 }: TurnDetailProps & PropsLocale<'turnscope'>) {
   switch (state.kind) {
     case 'loading':
       return <p role="status" className="turnscope-detail-note">{t('detail.loading')}</p>
-    case 'missing':
+    case 'absent':
       // The host answered "no such turn". Worth saying plainly: after a refresh
       // this is the only way a reader learns the record went away.
       return <p className="turnscope-detail-note">{t('detail.missing')}</p>
@@ -90,20 +88,29 @@ export function TurnDetailView({
           {t('detail.failed', { reason: state.reason })}
         </p>
       )
-    case 'loaded':
-      return <Loaded detail={state.detail} now={now} t={t} />
+    case 'value':
+      return <Loaded detail={state.value} now={now} diffs={diffs} t={t} />
   }
 }
 
 function Loaded({
   detail,
   now,
+  diffs,
   t,
 }: {
   readonly detail: TurnDetailData
   readonly now: number
+  readonly diffs: FileDiffFeed | undefined
 } & PropsLocale<'turnscope'>) {
   const { summary } = detail
+  // The open diff, if it is one of *these* changes. Matching against the recorded
+  // list rather than trusting the key keeps a selection made in another card from
+  // rendering here — the two cards would otherwise both claim the same diff.
+  const open =
+    diffs === undefined
+      ? undefined
+      : detail.changes.find(item => diffKey(item.turnId, item.path) === diffs.selected)
   return (
     <div className="turnscope-detail">
       {detail.safety === undefined ? (
@@ -124,8 +131,19 @@ function Loaded({
           <p className="turnscope-detail-note">{t('detail.noChanges')}</p>
         ) : (
           <ul className="turnscope-changes">
-            {detail.changes.map(change => <Change key={change.id} change={change} t={t} />)}
+            {detail.changes.map(change => (
+              <Change key={change.id} change={change} diffs={diffs} t={t} />
+            ))}
           </ul>
+        )}
+        {/* One comparison at a time, under the list it was opened from: the thing
+            a reader compares a diff against is the verdict above it, not another
+            file (`FR-07`, `docs/ARCHITECTURE.md §28.3`). */}
+        {open === undefined || diffs === undefined ? null : (
+          <DiffView
+            t={t}
+            state={diffs.states.get(diffKey(open.turnId, open.path)) ?? { kind: 'loading' }}
+          />
         )}
       </section>
 
@@ -236,10 +254,33 @@ function Reason({ reason, t }: { readonly reason: SafetyReason } & PropsLocale<'
   )
 }
 
-function Change({ change, t }: { readonly change: FileChange } & PropsLocale<'turnscope'>) {
+function Change({
+  change,
+  diffs,
+  t,
+}: {
+  readonly change: FileChange
+  readonly diffs: FileDiffFeed | undefined
+} & PropsLocale<'turnscope'>) {
+  const key = diffKey(change.turnId, change.path)
+  const open = diffs?.selected === key
   return (
     <li className="turnscope-change" data-kind={change.kind} data-attribution={change.attribution}>
-      <span className="turnscope-path">{change.path}</span>
+      {diffs === undefined ? (
+        <span className="turnscope-path">{change.path}</span>
+      ) : (
+        // The path is the only thing that selects a diff, and it selects it by the
+        // *recorded* value: the request carries what the host reported, never a
+        // path the browser composed.
+        <button
+          type="button"
+          className="turnscope-path turnscope-path-button"
+          aria-expanded={open}
+          onClick={() => diffs.select(change.turnId, change.path)}
+        >
+          {change.path}
+        </button>
+      )}
       {change.previousPath === undefined ? null : (
         <span className="turnscope-rename">{t('change.from', { path: change.previousPath })}</span>
       )}
@@ -255,6 +296,9 @@ function Change({ change, t }: { readonly change: FileChange } & PropsLocale<'tu
       {change.confidence === 'low' ? (
         <span className="turnscope-confidence">{t('attribution.lowConfidence')}</span>
       ) : null}
+      {diffs === undefined ? null : (
+        <span className="turnscope-diff-toggle">{t(open ? 'diff.hide' : 'diff.show')}</span>
+      )}
     </li>
   )
 }

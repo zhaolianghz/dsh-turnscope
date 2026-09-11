@@ -12,9 +12,10 @@ import { createTurnscopeView, type TurnscopeView } from '../../src/client/Turnsc
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
 import type { RecordedTurns } from '../../src/client/recorded-turns.ts'
 import { zh, type TurnscopeKey } from '../../src/client/locales.ts'
-import type { TurnDetailData } from '../../src/shared/contracts/api.ts'
+import type { GetDiffData, TurnDetailData } from '../../src/shared/contracts/api.ts'
 import type { ReplyRead, SafetySummaryDto, TurnSummaryDto } from '../../src/shared/contracts/api.ts'
 import { TurnDetailView } from '../../src/client/TurnDetail.tsx'
+import type { FileDiffFeed, FileDiffState } from '../../src/client/file-diffs.ts'
 import type { TurnDetailFeed, TurnDetailState } from '../../src/client/turn-details.ts'
 import type { TurnDetailWiring } from '../../src/client/TurnscopeView.tsx'
 
@@ -177,19 +178,80 @@ export const detail = (overrides: Partial<TurnDetailData> = {}): TurnDetailData 
   ...overrides,
 })
 
+/** One side of a comparison, present unless a test says otherwise. */
+export const side = (
+  overrides: Partial<GetDiffData['diff']['before']> = {},
+): GetDiffData['diff']['before'] => ({
+  source: 'recovery-blob',
+  byteSize: 10,
+  lineCount: 1,
+  endsWithNewline: true,
+  ...overrides,
+})
+
+type DiffAvailability = GetDiffData['diff']['availability']
+type DiffHunk = Extract<DiffAvailability, { kind: 'text' }>['hunks'][number]
+type DiffLine = DiffHunk['lines'][number]
+
+/** One line of a comparison. */
+export const line = (
+  kind: DiffLine['kind'],
+  text: string,
+  beforeLine?: number,
+  afterLine?: number,
+): DiffLine => ({
+  kind,
+  text,
+  ...(beforeLine === undefined ? {} : { beforeLine }),
+  ...(afterLine === undefined ? {} : { afterLine }),
+})
+
+/** One run of changes, with the four numbers unified diff's header carries. */
+export const hunk = (overrides: Partial<DiffHunk> = {}): DiffHunk => ({
+  beforeStart: 1,
+  beforeCount: 1,
+  afterStart: 1,
+  afterCount: 1,
+  lines: [],
+  ...overrides,
+})
+
+/** A path's diff, available and textual unless a test says otherwise. */
+export const fileDiff = (
+  path: string,
+  overrides: Partial<GetDiffData['diff']> = {},
+): GetDiffData['diff'] => ({
+  path,
+  kind: 'modified',
+  attribution: 'AGENT',
+  confidence: 'high',
+  baseline: false,
+  before: side(),
+  after: side(),
+  availability: { kind: 'text', hunks: [], truncated: false },
+  ...overrides,
+})
+
 /** A detail feed in whatever state a test needs, without a host or a promise. */
-export const detailWiring = (
-  states: ReadonlyMap<string, TurnDetailState> = new Map(),
-  expanded: Iterable<string> = [],
-  now = 0,
-): TurnDetailWiring => {
+export const detailWiring = (options: {
+  readonly states?: ReadonlyMap<string, TurnDetailState>
+  readonly expanded?: Iterable<string>
+  readonly now?: number
+  readonly diffs?: FileDiffFeed
+} = {}): TurnDetailWiring => {
   const feed: TurnDetailFeed = {
-    states,
-    expanded: new Set(expanded),
+    states: options.states ?? new Map(),
+    expanded: new Set(options.expanded ?? []),
     toggle: vi.fn(),
   }
-  return { feed, now }
+  return { feed, now: options.now ?? 0, diffs: options.diffs ?? diffFeed() }
 }
+
+/** A diff feed in whatever state a test needs, without a host or a promise. */
+export const diffFeed = (
+  states: ReadonlyMap<string, FileDiffState> = new Map(),
+  selected?: string,
+): FileDiffFeed => ({ states, selected, select: vi.fn() })
 
 export interface HostDouble {
   readonly host: TurnscopeHostApi
@@ -212,10 +274,11 @@ export function hostDouble(
     value: { turns: [] },
   },
   detailReply: ReplyRead<TurnDetailData> = { kind: 'absent' },
+  diffReply: ReplyRead<GetDiffData> = { kind: 'absent' },
 ): HostDouble {
   const listTurns = vi.fn(async () => listReply)
   const getTurnDetail = vi.fn(async () => detailReply)
-  const getDiff = vi.fn(async () => ({ kind: 'absent' as const }))
+  const getDiff = vi.fn(async () => diffReply)
   const evaluateSafety = vi.fn(async () => ({ kind: 'absent' as const }))
   return { host: { listTurns, getTurnDetail, getDiff, evaluateSafety } as TurnscopeHostApi, listTurns, getTurnDetail, getDiff, evaluateSafety }
 }

@@ -92,6 +92,27 @@ export declare const zh: {
     'result.passed': string;
     'result.failed': string;
     'result.unknown': string;
+    'diff.show': string;
+    'diff.hide': string;
+    'diff.loading': string;
+    'diff.missing': string;
+    'diff.failed': string;
+    'diff.binary': string;
+    'diff.unavailable': string;
+    'diff.truncated': string;
+    'diff.side': string;
+    'diff.sideLabel.before': string;
+    'diff.sideLabel.after': string;
+    'diff.source.recovery-blob': string;
+    'diff.source.git-object': string;
+    'diff.source.absent': string;
+    'diff.source.unknown': string;
+    'diff.noNewline': string;
+    'diff.hunk': string;
+    'diff.reason.no-checkpoint': string;
+    'diff.reason.not-recorded': string;
+    'diff.reason.missing-blob': string;
+    'diff.reason.git-unavailable': string;
 };
 export type TurnscopeKey = keyof typeof zh;
 export declare const en: {
@@ -177,6 +198,27 @@ export declare const en: {
     'result.passed': string;
     'result.failed': string;
     'result.unknown': string;
+    'diff.show': string;
+    'diff.hide': string;
+    'diff.loading': string;
+    'diff.missing': string;
+    'diff.failed': string;
+    'diff.binary': string;
+    'diff.unavailable': string;
+    'diff.truncated': string;
+    'diff.side': string;
+    'diff.sideLabel.before': string;
+    'diff.sideLabel.after': string;
+    'diff.source.recovery-blob': string;
+    'diff.source.git-object': string;
+    'diff.source.absent': string;
+    'diff.source.unknown': string;
+    'diff.noNewline': string;
+    'diff.hunk': string;
+    'diff.reason.no-checkpoint': string;
+    'diff.reason.not-recorded': string;
+    'diff.reason.missing-blob': string;
+    'diff.reason.git-unavailable': string;
 };
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {

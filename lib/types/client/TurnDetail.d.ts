@@ -11,11 +11,14 @@
  * and every row below states its case in text and the stylesheet only groups them.
  */
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots';
+import type { FileDiffFeed } from './file-diffs.ts';
 import type { TurnDetailState } from './turn-details.ts';
 export interface TurnDetailProps {
     readonly state: TurnDetailState;
     /** The clock, as an input. See `age.ts` for why it is not read here. */
     readonly now: number;
+    /** Where a path's diff comes from. Absent when nothing is wired to a host. */
+    readonly diffs?: FileDiffFeed | undefined;
 }
-export declare function TurnDetailView({ state, now, t, }: TurnDetailProps & PropsLocale<'turnscope'>): import("react/jsx-runtime").JSX.Element;
+export declare function TurnDetailView({ state, now, diffs, t, }: TurnDetailProps & PropsLocale<'turnscope'>): import("react/jsx-runtime").JSX.Element;
 //# sourceMappingURL=TurnDetail.d.ts.map

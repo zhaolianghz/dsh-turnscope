@@ -29,6 +29,12 @@ export declare const ACTION_KEYS: {
     readonly FORK: "action.FORK";
     readonly NONE: "action.NONE";
 };
+export declare const ATTRIBUTION_KEYS: {
+    readonly AGENT: "attribution.AGENT";
+    readonly BASELINE: "attribution.BASELINE";
+    readonly DRIFT: "attribution.DRIFT";
+    readonly UNCERTAIN: "attribution.UNCERTAIN";
+};
 export declare const EVIDENCE_KEYS: {
     readonly complete: "evidence.complete";
     readonly partial: "evidence.partial";

@@ -10,6 +10,9 @@ import {
   connectedProps,
   detail,
   detailWiring,
+  fileDiff,
+  hunk,
+  line,
   hostDouble,
   node,
   props,
@@ -177,10 +180,10 @@ describe('TurnscopeView', () => {
   })
 
   it('opens a turn onto what the host recorded, and closes it again', () => {
-    const wiring = detailWiring(
-      new Map([['t-1', { kind: 'loaded' as const, detail: detail({ changes: [change('src/a.ts')] }) }]]),
-      ['t-1'],
-    )
+    const wiring = detailWiring({
+      states: new Map([['t-1', { kind: 'value' as const, value: detail({ changes: [change('src/a.ts')] }) }]]),
+      expanded: ['t-1'],
+    })
     const view = render(<TurnscopeView
       {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
       recorded={recordedOf([row(1)])}
@@ -323,6 +326,85 @@ describe('createTurnscopeView', () => {
     fireEvent.click(view.getByRole('button', { name: '刷新' }))
     await waitFor(() => {
       expect(getTurnDetail).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('asks for a path’s diff when the reader clicks it, and not before', async () => {
+    const { host, getDiff } = hostDouble(
+      { kind: 'value', value: { turns: [row(1)] } },
+      { kind: 'value', value: detail({ changes: [change('src/a.ts')] }) },
+      {
+        kind: 'value',
+        value: {
+          diff: fileDiff('src/a.ts', {
+            availability: {
+              kind: 'text',
+              truncated: false,
+              hunks: [hunk({ lines: [line('add', 'const a = 1', undefined, 1)] })],
+            },
+          }),
+        },
+      },
+    )
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]),
+    }))} />)
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: '展开详情' })).toBeTruthy()
+    })
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: 'src/a.ts' })).toBeTruthy()
+    })
+    // A diff is the largest thing this panel can ask for and the least often
+    // wanted (`docs/ARCHITECTURE.md §44.2`): fetching one per change would be the
+    // most expensive possible way to render none of them.
+    expect(getDiff).not.toHaveBeenCalled()
+
+    fireEvent.click(view.getByRole('button', { name: 'src/a.ts' }))
+    await waitFor(() => {
+      expect(view.container.querySelector('.turnscope-hunk')).toBeTruthy()
+    })
+    // The request carries the *recorded* path — the one the host reported — so a
+    // path that arrived from the browser can only ever select a change, never
+    // become one (see `GetDiffRequest`).
+    expect(getDiff).toHaveBeenCalledWith({ apiVersion: API_VERSION, turnId: 't-1', path: 'src/a.ts' })
+    expect(view.getByText('const a = 1')).toBeTruthy()
+
+    // Clicking the open path closes it, and asking again would be asking the same
+    // question about a turn that has already finished.
+    fireEvent.click(view.getByRole('button', { name: 'src/a.ts' }))
+    expect(view.container.querySelector('.turnscope-hunk')).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: 'src/a.ts' }))
+    await waitFor(() => {
+      expect(view.container.querySelector('.turnscope-hunk')).toBeTruthy()
+    })
+    expect(getDiff).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a diff it could not read inside the turn, not in place of it', async () => {
+    const { host } = hostDouble(
+      { kind: 'value', value: { turns: [row(1)] } },
+      { kind: 'value', value: detail({ changes: [change('src/a.ts')] }) },
+      { kind: 'unusable', detail: 'gateway: no such endpoint' },
+    )
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]),
+    }))} />)
+
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: '展开详情' })).toBeTruthy()
+    })
+    fireEvent.click(view.getByRole('button', { name: '展开详情' }))
+    await waitFor(() => {
+      expect(view.getByRole('button', { name: 'src/a.ts' })).toBeTruthy()
+    })
+    fireEvent.click(view.getByRole('button', { name: 'src/a.ts' }))
+    await waitFor(() => {
+      expect(view.getByRole('note').textContent).toContain('gateway: no such endpoint')
     })
   })
 
