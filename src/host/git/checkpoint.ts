@@ -212,6 +212,20 @@ async function gitPathExists(git: GitPort, root: string, name: string): Promise<
 }
 
 /**
+ * Why a checkpoint could not be taken.
+ *
+ * Exported rather than spelled inline at both the producer and the consumer, so
+ * a safety rule can name "the workspace is not a repository" without matching on
+ * a string someone may reword later.
+ */
+export const CHECKPOINT_FAILURE = {
+  /** The path is not inside a Git worktree at all (`§14.1` S009). */
+  NOT_A_REPOSITORY: 'not a git worktree',
+  /** `git status` ran and failed, which is different from having no changes. */
+  STATUS_UNAVAILABLE: 'git status unavailable',
+} as const
+
+/**
  * Observe a workspace and persist the result.
  *
  * This is the observer of `docs/ARCHITECTURE.md §11`: it answers "what is here
@@ -250,14 +264,14 @@ export async function captureCheckpoint(
   })
 
   if (!(await git.isRepository(repoRoot))) {
-    const record = failed('not a git worktree')
+    const record = failed(CHECKPOINT_FAILURE.NOT_A_REPOSITORY)
     await sink.putCheckpoint(record)
     return { record, paths: [], capturedPaths: [] }
   }
 
   const status = await git.status(repoRoot)
   if (status === undefined) {
-    const record = failed('git status unavailable')
+    const record = failed(CHECKPOINT_FAILURE.STATUS_UNAVAILABLE)
     await sink.putCheckpoint(record)
     return { record, paths: [], capturedPaths: [] }
   }

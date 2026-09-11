@@ -61,6 +61,19 @@ export declare function resolveWithin(root: string, candidate: string): string |
 /** Whether a repo-relative path falls under an ignore entry. */
 export declare function isIgnored(path: string, ignorePaths: readonly string[]): boolean;
 /**
+ * Why a checkpoint could not be taken.
+ *
+ * Exported rather than spelled inline at both the producer and the consumer, so
+ * a safety rule can name "the workspace is not a repository" without matching on
+ * a string someone may reword later.
+ */
+export declare const CHECKPOINT_FAILURE: {
+    /** The path is not inside a Git worktree at all (`§14.1` S009). */
+    readonly NOT_A_REPOSITORY: "not a git worktree";
+    /** `git status` ran and failed, which is different from having no changes. */
+    readonly STATUS_UNAVAILABLE: "git status unavailable";
+};
+/**
  * Observe a workspace and persist the result.
  *
  * This is the observer of `docs/ARCHITECTURE.md §11`: it answers "what is here

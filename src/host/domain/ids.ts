@@ -51,3 +51,14 @@ export function checkpointPathIdFor(checkpointId: string, path: string): string 
 export function fileChangeIdFor(turnId: string, path: string): string {
   return `${turnId}:chg:${path}`
 }
+
+/**
+ * `${turnId}:safety` — the verdict for a turn.
+ *
+ * One per turn, rewritten on every evaluation (`docs/ARCHITECTURE.md §16`): a
+ * verdict is about the workspace *now*, so keeping yesterday's would be keeping
+ * an answer to a question nobody asked.
+ */
+export function safetyVerdictIdFor(turnId: string): string {
+  return `${turnId}:safety`
+}

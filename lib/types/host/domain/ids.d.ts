@@ -35,4 +35,12 @@ export declare function checkpointPathIdFor(checkpointId: string, path: string):
  * second opinion.
  */
 export declare function fileChangeIdFor(turnId: string, path: string): string;
+/**
+ * `${turnId}:safety` — the verdict for a turn.
+ *
+ * One per turn, rewritten on every evaluation (`docs/ARCHITECTURE.md §16`): a
+ * verdict is about the workspace *now*, so keeping yesterday's would be keeping
+ * an answer to a question nobody asked.
+ */
+export declare function safetyVerdictIdFor(turnId: string): string;
 //# sourceMappingURL=ids.d.ts.map
