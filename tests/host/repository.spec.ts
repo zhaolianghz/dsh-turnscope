@@ -239,7 +239,7 @@ describe('openIndex', () => {
   it('opens an empty index that answers reads with nothing', async () => {
     const repository = await openRepository()
 
-    expect(await repository.listTurns('s-1', 10)).toEqual([])
+    expect(await repository.listTurns('s-1', { limit: 10 })).toEqual({ turns: [] })
     await expect(repository.getTurn('s-1:turn:0')).resolves.toBeUndefined()
     expect(await repository.getActivities('s-1:turn:0')).toEqual([])
     expect(await repository.referencedRefs()).toEqual([])
@@ -485,11 +485,80 @@ describe('turns', () => {
     }
     await repository.upsertTurn(turn({ id: 's-2:turn:0', sessionId: 's-2', ordinal: 0 }))
 
-    const all = await repository.listTurns('s-1', 10)
-    expect(all.map(record => record.id)).toEqual(['s-1:turn:2', 's-1:turn:1', 's-1:turn:0'])
+    const all = await repository.listTurns('s-1', { limit: 10 })
+    expect(all.turns.map(record => record.id)).toEqual(['s-1:turn:2', 's-1:turn:1', 's-1:turn:0'])
 
-    const limited = await repository.listTurns('s-1', 2)
-    expect(limited.map(record => record.id)).toEqual(['s-1:turn:2', 's-1:turn:1'])
+    const limited = await repository.listTurns('s-1', { limit: 2 })
+    expect(limited.turns.map(record => record.id)).toEqual(['s-1:turn:2', 's-1:turn:1'])
+  })
+
+  it('reports no next cursor when the page exhausts the session', async () => {
+    const repository = await openRepository()
+    await repository.upsertTurn(turn({ ordinal: 0 }))
+
+    // A short page and an exactly-full page both mean "nothing more". The extra
+    // probe row is what lets the difference between "full page" and "last page"
+    // be answered without a second query, and this is the case that catches a
+    // naive `rows.length === limit` test.
+    expect(await repository.listTurns('s-1', { limit: 1 })).toEqual({
+      turns: [expect.objectContaining({ id: 's-1:turn:0' })],
+    })
+    expect(await repository.listTurns('s-1', { limit: 20 })).toEqual({
+      turns: [expect.objectContaining({ id: 's-1:turn:0' })],
+    })
+  })
+
+  it('walks a session older and older without repeating or skipping a turn', async () => {
+    const repository = await openRepository()
+    for (const ordinal of [0, 1, 2, 3, 4]) {
+      await repository.upsertTurn(turn({ id: `s-1:turn:${ordinal}`, ordinal }))
+    }
+
+    const seen: string[] = []
+    let cursor: number | undefined
+    // Deliberately a bounded walk rather than `while (page.nextCursor)`: if the
+    // cursor were ever returned unchanged this loop would hang, and a test that
+    // can hang reports less than one that fails.
+    for (let page = 0; page < 10; page += 1) {
+      const result: Awaited<ReturnType<typeof repository.listTurns>> =
+        cursor === undefined
+          ? await repository.listTurns('s-1', { limit: 2 })
+          : await repository.listTurns('s-1', { limit: 2, cursor })
+      seen.push(...result.turns.map(record => record.id))
+      if (result.nextCursor === undefined) break
+      cursor = result.nextCursor
+    }
+
+    expect(seen).toEqual([
+      's-1:turn:4',
+      's-1:turn:3',
+      's-1:turn:2',
+      's-1:turn:1',
+      's-1:turn:0',
+    ])
+  })
+
+  it('keeps a page stable while newer turns are appended', async () => {
+    const repository = await openRepository()
+    for (const ordinal of [0, 1, 2, 3]) {
+      await repository.upsertTurn(turn({ id: `s-1:turn:${ordinal}`, ordinal }))
+    }
+
+    const first = await repository.listTurns('s-1', { limit: 2 })
+    // The live case this exists for: a turn lands between two page reads.
+    await repository.upsertTurn(turn({ id: 's-1:turn:4', ordinal: 4 }))
+    const second = await repository.listTurns('s-1', {
+      limit: 2,
+      ...(first.nextCursor === undefined ? {} : { cursor: first.nextCursor }),
+    })
+
+    // An offset page would repeat `turn:2` here.
+    expect([...first.turns, ...second.turns].map(record => record.id)).toEqual([
+      's-1:turn:3',
+      's-1:turn:2',
+      's-1:turn:1',
+      's-1:turn:0',
+    ])
   })
 
   it('orders by ordinal, not by insertion order', async () => {
@@ -498,9 +567,9 @@ describe('turns', () => {
       await repository.upsertTurn(turn({ id: `s-1:turn:${ordinal}`, ordinal }))
     }
 
-    const turns = await repository.listTurns('s-1', 10)
+    const page = await repository.listTurns('s-1', { limit: 10 })
 
-    expect(turns.map(record => record.ordinal)).toEqual([2, 1, 0])
+    expect(page.turns.map(record => record.ordinal)).toEqual([2, 1, 0])
   })
 })
 
@@ -896,7 +965,7 @@ describe('transactions', () => {
 
     expect(handle.db.isTransaction).toBe(false)
     expect(scalar(handle, 'SELECT count(*) AS n FROM workspaces')).toBe(0)
-    expect(await repository.listTurns('s-1', 10)).toEqual([])
+    expect(await repository.listTurns('s-1', { limit: 10 })).toEqual({ turns: [] })
   })
 
   it('makes a committed transaction visible', async () => {
@@ -937,7 +1006,7 @@ describe('restart recovery', () => {
     handles.push(second)
     const after = createRepository(second)
 
-    expect(await after.listTurns('s-1', 10)).toEqual([turnRecord])
+    expect(await after.listTurns('s-1', { limit: 10 })).toEqual({ turns: [turnRecord] })
     expect(await after.getActivities(turnRecord.id)).toEqual([activityRecord])
     expect(await after.getCheckpoint(checkpointRecord.id)).toEqual(checkpointRecord)
     expect(await after.statObject(REF_A)).toEqual(objectEntry)

@@ -8,12 +8,13 @@
  * in the test name rather than buried in a fixture.
  */
 import { describe, expect, it } from 'vitest'
-import { attributeChanges } from '../../../src/host/attribution/engine.ts'
+import { applyCurrentState, attributeChanges } from '../../../src/host/attribution/engine.ts'
 import type { ObservedCheckpoint } from '../../../src/host/attribution/types.ts'
 import { SCHEMA_VERSION } from '../../../src/host/domain/types.ts'
 import type {
   CheckpointCompleteness,
   CheckpointPathState,
+  FileChange,
   FileToolHint,
   PathStatus,
 } from '../../../src/host/domain/types.ts'
@@ -435,5 +436,95 @@ describe('the shape of the answer', () => {
     }
 
     expect(turn(evidence)).toEqual(turn(evidence))
+  })
+})
+
+/**
+ * Bringing a recorded change up to date.
+ *
+ * This is what a re-evaluation does to a row it already has: the turn is over
+ * and cannot change, but the file can. The distinction that matters is that only
+ * a change the *agent* made can drift — a baseline path was already the user's,
+ * so the user editing it further is not a departure from anything we claimed.
+ */
+describe('applyCurrentState', () => {
+  const recorded = (patch: Partial<FileChange> = {}): FileChange => ({
+    schemaVersion: SCHEMA_VERSION,
+    id: `${TURN}:chg:src/a.ts`,
+    turnId: TURN,
+    path: 'src/a.ts',
+    kind: 'modified',
+    attribution: 'AGENT',
+    confidence: 'high',
+    baseline: false,
+    beforeHash: 'sha256:v1',
+    afterHash: 'sha256:v2',
+    // What attribution records for a change that was not drifted when the turn
+    // closed: the `CURRENT` it was judged against. A row without one is a row
+    // this function has never seen, and it will always be rewritten.
+    currentHash: 'sha256:v2',
+    evidenceRefs: [`${TURN}:cp:post`],
+    ...patch,
+  })
+
+  const current = (paths: readonly CheckpointPathState[]) =>
+    checkpoint('recovery_before', 'complete', paths)
+
+  it('leaves the recorded change alone when the file has not moved', () => {
+    const change = recorded()
+
+    const same = applyCurrentState(change, current([state('src/a.ts', 'modified', 'sha256:v2')]))
+
+    // Identity, not merely equality: an unchanged change must not be rewritten,
+    // so a refresh that finds nothing new writes nothing.
+    expect(same).toBe(change)
+  })
+
+  it('marks an agent change as drifted once the file holds something else', () => {
+    const change = recorded()
+
+    const drifted = applyCurrentState(
+      change,
+      current([state('src/a.ts', 'modified', 'sha256:v3')]),
+    )
+
+    expect(drifted.attribution).toBe('DRIFT')
+    // The turn's own facts are untouched: the agent did write v2, and that is
+    // still what happened.
+    expect(drifted.afterHash).toBe('sha256:v2')
+    expect(drifted.currentHash).toBe('sha256:v3')
+    expect(drifted.evidenceRefs).toContain(`${TURN}:cp:recovery_before`)
+  })
+
+  it('marks an agent change as drifted when the file is gone', () => {
+    const change = recorded()
+
+    const drifted = applyCurrentState(change, current([state('src/a.ts', 'deleted', undefined)]))
+
+    // A path that was there and is not is the strongest form of drift, and the
+    // one a rewind is most dangerous against.
+    expect(drifted.attribution).toBe('DRIFT')
+  })
+
+  it('never calls a baseline path drifted', () => {
+    // Dirty before the turn and dirty through it: the user's own file. Them
+    // editing it again is the ordinary case, not a reason to refuse a rewind
+    // that would not touch it.
+    const change = recorded({ attribution: 'BASELINE', baseline: true, afterHash: 'sha256:u' })
+
+    const after = applyCurrentState(change, current([state('src/a.ts', 'modified', 'sha256:u2')]))
+
+    expect(after.attribution).toBe('BASELINE')
+    expect(after.currentHash).toBe('sha256:u2')
+  })
+
+  it('never revives an uncertain change into an actionable one', () => {
+    const change = recorded({ attribution: 'UNCERTAIN', confidence: 'low' })
+
+    const after = applyCurrentState(change, current([state('src/a.ts', 'modified', 'sha256:v3')]))
+
+    // Drift is a downgrade, so there is no level below `UNCERTAIN` to reach:
+    // the change stays unattributable rather than becoming a confident refusal.
+    expect(after.attribution).toBe('UNCERTAIN')
   })
 })

@@ -105,12 +105,61 @@ export function attributeChanges(input: AttributionInput): TurnChangeSet {
     if (change !== undefined) changes.push(change)
   }
 
-  return { turnId: pre.record.turnId, changes, summary: summarize(changes) }
+  return { turnId: pre.record.turnId, changes, summary: summarizeChanges(changes) }
 }
 
 /** Every path of a change set, for a caller that only needs the names. */
 export function changedPaths(changes: readonly FileChange[]): readonly string[] {
   return changes.map(change => change.path)
+}
+
+/**
+ * Bring one recorded change's *current* fields up to date.
+ *
+ * A change has two kinds of field and they age differently. `kind`, `baseline`,
+ * `previousPath` and the two endpoint hashes describe a turn that has already
+ * ended; they are as true now as they were then. Whether the file is *still*
+ * what the agent left is a statement about right now, and it is the one this
+ * carries forward — otherwise a re-evaluation could report `S005` in the verdict
+ * while the change row beside it still read `AGENT`, and which of the two a
+ * client shows would depend on which endpoint it happened to call last.
+ *
+ * Only a change that was the agent's can drift. A baseline path was dirty before
+ * the turn and stayed dirty through it, so the user editing it afterwards is not
+ * a departure from anything we claimed (`docs/ARCHITECTURE.md §10.2`); calling
+ * that drift would withdraw a rewind for a file the turn never touched.
+ */
+export function applyCurrentState(
+  change: FileChange,
+  current: ObservedCheckpoint,
+): FileChange {
+  const now = observe(index(current), change.path)
+  const currentHash = now.hash
+  const wasPresent = change.kind !== 'deleted'
+  // Mirrors `drifted`: a path that is gone, or whose bytes differ. An `AGENT`
+  // change whose after-content was never readable can only be seen to have moved
+  // by its presence — that change is already `medium` confidence and already
+  // reported as a hole by the checkpoint's own completeness, so guessing at a
+  // content comparison here would invent evidence rather than find it.
+  const moved =
+    now.seen &&
+    (now.present !== wasPresent ||
+      (now.hash !== undefined && change.afterHash !== undefined && now.hash !== change.afterHash))
+
+  if (!moved && currentHash === change.currentHash) return change
+
+  const refs = new Set(change.evidenceRefs)
+  if (now.seen) {
+    refs.add(current.record.id)
+    if (now.stateId !== undefined) refs.add(now.stateId)
+  }
+
+  return {
+    ...change,
+    attribution: moved && change.attribution === 'AGENT' ? 'DRIFT' : change.attribution,
+    evidenceRefs: [...refs].sort(),
+    ...(currentHash === undefined ? {} : { currentHash }),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +477,15 @@ function build(ctx: PathContext, args: BuildArgs): FileChange {
   }
 }
 
-function summarize(changes: readonly FileChange[]): AttributionSummary {
+/**
+ * Recount a change set's attributions.
+ *
+ * Exported because a change set is rebuilt from storage whenever a verdict is
+ * refreshed: the changes are recorded facts and must not be re-derived, but the
+ * summary that travels with them has to be reconstructed from the rows rather
+ * than trusted to have been kept in step with them.
+ */
+export function summarizeChanges(changes: readonly FileChange[]): AttributionSummary {
   const count = (attribution: Attribution): number =>
     changes.filter(change => change.attribution === attribution).length
   return {

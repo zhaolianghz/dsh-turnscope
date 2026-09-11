@@ -31,7 +31,7 @@
  * that makes `S001` fire, and it has to reach the user as `UNPROTECTED` rather
  * than as a stack trace in the harness log.
  */
-import { attributeChanges } from '../attribution/engine.ts'
+import { applyCurrentState, attributeChanges, summarizeChanges } from '../attribution/engine.ts'
 import type { ObservedCheckpoint, TurnChangeSet } from '../attribution/types.ts'
 import { checkpointIdFor, safetyVerdictIdFor } from '../domain/ids.ts'
 import { isTerminal } from '../domain/turn-state.ts'
@@ -104,23 +104,53 @@ export function createTurnInspector(deps: InspectionDeps): TurnInspector {
   }
 
   /**
-   * The one place a verdict is produced.
+   * Read the change set back out of storage, with its current state renewed.
    *
-   * Hints are carried as paths *and* as evidence, which is the whole point of
-   * `docs/ARCHITECTURE.md §8.1`: naming a path in a hint makes it worth
-   * observing even when `git status` says it is clean, and the hint's activity
-   * id is then cited on the resulting change. It is never allowed to decide the
-   * attribution by itself.
+   * Rows come back sorted by path, which is the order the engine writes them in,
+   * so a rebuilt change set is indistinguishable from a freshly attributed one.
+   * The summary is recounted from the rows rather than trusted to have been kept
+   * in step with them.
+   *
+   * Nothing is written here. {@link evaluate} owns persisting whatever this
+   * returns, so the two ways a change set can be produced cannot drift apart in
+   * whether they are recorded.
    */
-  const inspect = async (
+  const readChangeSet = async (
+    turnId: string,
+    current: ObservedCheckpoint,
+  ): Promise<TurnChangeSet | undefined> => {
+    const stored = await sink.listFileChanges(turnId)
+    if (stored.length === 0) return undefined
+    const changes = stored.map(change => applyCurrentState(change, current))
+    return { turnId, changes, summary: summarizeChanges(changes) }
+  }
+
+  /**
+   * Take a fresh `CURRENT`, decide who changed what, and judge.
+   *
+   * The two public entry points differ only in where the change set comes from,
+   * and that is exactly the difference the parameter carries: a writer for
+   * `inspect`, which attributes from the checkpoints that are stored, and a
+   * reader for `refresh`, which renews the rows it already has. `CURRENT` is
+   * taken first and unconditionally, before either of them runs, so that a
+   * failure in anything later still leaves on record the observation that was
+   * the whole reason for asking.
+   *
+   * `CURRENT` being available to the resolver is what lets `refresh` renew the
+   * one field of a change that is a statement about now; the recorded
+   * checkpoints are handed over too, because a resolver is allowed to ignore
+   * them but not to be unable to see them.
+   */
+  const evaluate = async (
     turn: TurnRecord,
     workspace: TurnWorkspace,
-    hints: readonly FileToolHint[] = [],
-  ): Promise<InspectionResult | undefined> => {
-    const hintPaths = hints.map(hint => hint.path)
-
-    // `CURRENT` is taken first and unconditionally. If anything below fails, the
-    // observation that was the whole point of asking is still on record.
+    resolveChangeSet: (observed: {
+      readonly pre: ObservedCheckpoint | undefined
+      readonly post: ObservedCheckpoint | undefined
+      readonly current: ObservedCheckpoint
+    }) => TurnChangeSet | undefined | Promise<TurnChangeSet | undefined>,
+    hintPaths: readonly string[],
+  ): Promise<InspectionResult> => {
     const current = await capture(turn, workspace, PHASE.CURRENT, hintPaths)
 
     const [pre, post] = await Promise.all([
@@ -128,42 +158,51 @@ export function createTurnInspector(deps: InspectionDeps): TurnInspector {
       readCheckpoint(turn.id, PHASE.POST),
     ])
 
-    // Attribution needs both ends. Without one of them there is no honest
-    // answer about who changed a path, and inventing `UNCERTAIN` per path would
-    // bury the real fact — that the turn was never observed — under a list of
-    // guesses. `S001`/`S002`/`S010` report it instead.
-    let changeSet: TurnChangeSet | undefined
-    if (pre !== undefined && post !== undefined) {
-      changeSet = attributeChanges({ pre, post, current, hints })
+    const changeSet = await resolveChangeSet({ pre, post, current })
+    if (changeSet !== undefined) {
       // Ids are derived in the engine from the turn and the path, so a
       // re-evaluation rewrites the same rows instead of appending a second
       // opinion about the same file.
       for (const change of changeSet.changes) await sink.putFileChange(change)
     }
 
-    const input = {
-      turn,
-      pre,
-      post,
-      current,
-      changeSet,
-      now: clock(),
-    }
+    const input = { turn, pre, post, current, changeSet, now: clock() }
     const verdict = toSafetyVerdict(input, evaluateSafety(input))
     await sink.putSafetyVerdict({ ...verdict, id: safetyVerdictIdFor(turn.id) })
 
-    return {
-      turnId: turn.id,
-      changeSet,
-      verdict,
-      current,
-      pre,
-      post,
-    }
+    return { turnId: turn.id, changeSet, verdict, current, pre, post }
   }
 
-  return {
-    observe: async (turn, workspace, previousStatus) => {
+  /**
+   * Attribute from the checkpoints that are stored, citing the hints.
+   *
+   * Hints become paths *and* evidence, which is the whole point of
+   * `docs/ARCHITECTURE.md §8.1`: naming a path in a hint makes it worth
+   * observing even when `git status` says it is clean, and the hint's activity
+   * id is then cited on the resulting change. A hint is never allowed to
+   * decide the attribution by itself.
+   *
+   * Attribution needs both ends, and both are read here rather than inside the
+   * resolver because a missing end is the *fact* that `S001`/`S002`/`S010`
+   * report: inventing `UNCERTAIN` per path would bury it under a list of
+   * guesses about a turn that was never observed at all.
+   */
+  const inspect = (
+    turn: TurnRecord,
+    workspace: TurnWorkspace,
+    hints: readonly FileToolHint[],
+  ): Promise<InspectionResult> =>
+    evaluate(
+      turn,
+      workspace,
+      ({ pre, post, current }) =>
+        pre === undefined || post === undefined
+          ? undefined
+          : attributeChanges({ pre, post, current, hints }),
+      hints.map(hint => hint.path),
+    )
+
+  return {    observe: async (turn, workspace, previousStatus) => {
       const wasRunning = previousStatus !== undefined && !isTerminal(previousStatus)
       const opensNow = previousStatus === undefined && !isTerminal(turn.status)
 
@@ -182,15 +221,18 @@ export function createTurnInspector(deps: InspectionDeps): TurnInspector {
       }
 
       await capture(turn, workspace, PHASE.POST, [])
-      // `inspect` takes its own `CURRENT` a moment later. Skipping that second
+      // Attribution takes its own `CURRENT` a moment later. Skipping that second
       // capture would be cheaper and would make the first verdict a claim about
       // the end of the turn rather than about the workspace the user is looking
       // at — and the drift rules exist precisely because those two can differ
       // before anyone asks.
-      return inspect(turn, workspace)
+      return inspect(turn, workspace, [])
     },
 
     inspect: (turn, workspace, options) => inspect(turn, workspace, options?.hints ?? []),
+
+    refresh: (turn, workspace) =>
+      evaluate(turn, workspace, ({ current }) => readChangeSet(turn.id, current), []),
 
     latestVerdict: (turnId: string): Promise<SafetyVerdict | undefined> =>
       sink.getLatestVerdict(turnId),

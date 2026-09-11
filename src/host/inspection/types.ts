@@ -36,6 +36,7 @@ export type InspectionSink = Pick<
   | 'putObjectRecord'
   | 'getCheckpoint'
   | 'listCheckpointPaths'
+  | 'listFileChanges'
   | 'putFileChange'
   | 'putSafetyVerdict'
   | 'getLatestVerdict'
@@ -124,6 +125,19 @@ export interface TurnInspector {
     workspace: TurnWorkspace,
     options?: { readonly hints?: readonly FileToolHint[] },
   ): Promise<InspectionResult | undefined>
+  /**
+   * Answer the same question again without re-deriving the history.
+   *
+   * The difference from {@link TurnInspector.inspect} is what it refuses to
+   * redo. Attribution is a statement about a turn that has already ended — the
+   * checkpoints it rests on are immutable and so is its answer — whereas safety
+   * is a statement about right now. Re-deriving the first to refresh the second
+   * would be doubly wrong: it would spend the git work twice, and it would let a
+   * refresh silently replace an `AGENT` change with `UNCERTAIN` just because the
+   * hint evidence that justified the attribution was no longer in hand. So the
+   * change set is read back and only the judgement is redone.
+   */
+  refresh(turn: TurnRecord, workspace: TurnWorkspace): Promise<InspectionResult>
   /** The verdict already on record, for a UI that opens before re-evaluating. */
   latestVerdict(turnId: string): Promise<SafetyVerdict | undefined>
 }

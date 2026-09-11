@@ -215,6 +215,55 @@ describe('createTurnInspector', () => {
     await f.close()
   })
 
+  it('re-judges a stored turn without attributing it again', async () => {
+    const f = await fixture()
+    await writeRepoFile(f.root, 'src/auth.ts', 'version 1\n')
+    await commitAll(f.root, 'add auth')
+
+    await f.inspector.observe(running(), f.workspace, undefined)
+    await writeRepoFile(f.root, 'src/auth.ts', 'version 2, agent\n')
+    await f.inspector.observe(completed(), f.workspace, 'running')
+    const recorded = (await f.repo.listFileChanges(TURN_ID))[0]
+    expect(recorded?.attribution).toBe('AGENT')
+
+    const refreshed = await f.inspector.refresh(completed(), f.workspace)
+
+    // The turn ended and its checkpoints are immutable, so an unchanged
+    // workspace must reproduce the same judgement. Re-deriving it would be a
+    // second opinion on a fact that cannot have changed.
+    expect(refreshed.changeSet?.changes).toEqual([recorded])
+    expect(refreshed.verdict.level).toBe('SAFE')
+    expect(await f.repo.getLatestVerdict(TURN_ID)).toEqual(
+      expect.objectContaining({ level: 'SAFE' }),
+    )
+    // `refresh` writes no checkpoint of its own: the verdict follows from the
+    // stored PRE/POST plus a fresh CURRENT, and CURRENT was already recorded.
+    expect(await f.repo.listCheckpoints(TURN_ID)).toHaveLength(3)
+    await f.close()
+  })
+
+  it('refreshes a stored turn against a workspace that has moved since', async () => {
+    const f = await fixture()
+    await writeRepoFile(f.root, 'src/auth.ts', 'version 1\n')
+    await commitAll(f.root, 'add auth')
+
+    await f.inspector.observe(running(), f.workspace, undefined)
+    await writeRepoFile(f.root, 'src/auth.ts', 'version 2, agent\n')
+    await f.inspector.observe(completed(), f.workspace, 'running')
+
+    await writeRepoFile(f.root, 'src/auth.ts', 'version 3, user\n')
+    const refreshed = await f.inspector.refresh(completed(), f.workspace)
+
+    expect(refreshed.verdict.level).toBe('FORK_ONLY')
+    expect(refreshed.verdict.reasons.map(reason => reason.code)).toContain('S005_TARGET_FILE_DRIFT')
+    // The decision differs from `inspect`'s only in where it came from, so the
+    // row it leaves behind has to be the same one `inspect` would have written.
+    // Otherwise the change list would disagree with the badge above it depending
+    // on which endpoint last ran.
+    expect((await f.repo.listFileChanges(TURN_ID))[0]?.attribution).toBe('DRIFT')
+    await f.close()
+  })
+
   it('lets a tool hint widen what a re-evaluation looks at', async () => {
     const f = await fixture()
     // Committed and clean: `git status` will not mention it, so the only way it

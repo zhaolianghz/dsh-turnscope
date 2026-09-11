@@ -1,1 +1,1 @@
-{"version":3,"file":"inspector.d.ts","sourceRoot":"","sources":["../../../../src/host/inspection/inspector.ts"],"names":[],"mappings":"AAwCA,OAAO,KAAK,EAAE,cAAc,EAAoB,aAAa,EAAiB,MAAM,YAAY,CAAA;AAgBhG;;;;;;;GAOG;AACH,wBAAgB,mBAAmB,CAAC,IAAI,EAAE,cAAc,GAAG,aAAa,CAqIvE"}
+{"version":3,"file":"inspector.d.ts","sourceRoot":"","sources":["../../../../src/host/inspection/inspector.ts"],"names":[],"mappings":"AAwCA,OAAO,KAAK,EAAE,cAAc,EAAoB,aAAa,EAAiB,MAAM,YAAY,CAAA;AAgBhG;;;;;;;GAOG;AACH,wBAAgB,mBAAmB,CAAC,IAAI,EAAE,cAAc,GAAG,aAAa,CA+KvE"}

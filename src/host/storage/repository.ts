@@ -32,6 +32,26 @@ import { TERMINAL_TURN_STATUSES } from '../domain/turn-state.ts'
 import type { IndexHandle } from './sqlite-index.ts'
 
 /**
+ * How much of a session's turn list to read, and from where.
+ *
+ * `cursor` is opaque to the caller on purpose — it is the previous page's last
+ * `ordinal`, but a client that treated it as an arithmetic offset would break
+ * the moment the ordering key changed, so nothing in the contract invites that.
+ */
+export interface TurnPageQuery {
+  readonly limit: number
+  /** Exclusive upper bound on `ordinal`: return turns strictly older than this. */
+  readonly cursor?: number
+}
+
+/** One page of turns, plus how to ask for the next one. */
+export interface TurnPage {
+  readonly turns: readonly TurnRecord[]
+  /** Set only when more rows are known to exist, so its absence is trustworthy. */
+  readonly nextCursor?: number
+}
+
+/**
  * The read side of the trace store: the port every other module consumes.
  *
  * It is the seam that keeps `node:sqlite` inside `src/host/storage`. It is also
@@ -41,14 +61,24 @@ import type { IndexHandle } from './sqlite-index.ts'
  */
 export interface TraceRepository {
   upsertWorkspace(record: WorkspaceRecord): Promise<void>
+  getWorkspace(workspaceId: string): Promise<WorkspaceRecord | undefined>
   upsertSession(record: SessionRecord): Promise<void>
   upsertTurn(record: TurnRecord): Promise<void>
   /** Move a turn to a terminal status, unless it already reached one. */
   closeTurn(turnId: string, status: TurnStatus, endedAt: number): Promise<void>
   /** Record what a turn's evidence turned out to be worth, after the fact. */
   setEvidenceCompleteness(turnId: string, value: EvidenceCompleteness): Promise<void>
-  /** The turns of a session, newest ordinal first. */
-  listTurns(sessionId: string, limit: number): Promise<readonly TurnRecord[]>
+  /**
+   * One page of a session's turns, newest ordinal first.
+   *
+   * Keyset rather than offset, per `docs/ARCHITECTURE.md §44.3`: a session can
+   * outlive a thousand turns, and an `OFFSET` page shifts under the reader every
+   * time a new turn is appended — which, for a list that is being watched live,
+   * is exactly when it must not. The cursor is the `ordinal` of the last row the
+   * caller saw, so the next page is "everything older than that" and nothing is
+   * ever skipped or repeated.
+   */
+  listTurns(sessionId: string, query: TurnPageQuery): Promise<TurnPage>
   getTurn(turnId: string): Promise<TurnRecord | undefined>
   appendActivity(record: ActivityRecord): Promise<void>
   /** The activities of a turn, in upstream `seq` order. */
@@ -64,6 +94,14 @@ export interface TraceRepository {
   putFileChange(record: FileChange): Promise<void>
   /** The changes attributed to a turn, ordered by path. */
   listFileChanges(turnId: string): Promise<readonly FileChange[]>
+  /**
+   * How many changes each of these turns has, in one statement.
+   *
+   * Bulk for the same reason the verdict lookup below is: the turn list renders
+   * a count per row and refreshes while a turn runs, so a per-row query would
+   * make the hot path 1 + N (`docs/ARCHITECTURE.md §44.3`).
+   */
+  countFileChanges(turnIds: readonly string[]): Promise<ReadonlyMap<string, number>>
   putCommand(record: CommandRecord): Promise<void>
   listCommands(turnId: string): Promise<readonly CommandRecord[]>
   putTest(record: TestRecord): Promise<void>
@@ -71,6 +109,15 @@ export interface TraceRepository {
   putSafetyVerdict(record: SafetyVerdict): Promise<void>
   /** The most recent verdict for a turn, by evaluation time. */
   getLatestVerdict(turnId: string): Promise<SafetyVerdict | undefined>
+  /**
+   * The most recent verdict for each of these turns, in one statement.
+   *
+   * "Most recent" is per turn, not per call, so the rows come back newest first
+   * and the first one seen for a turn wins. A turn with no verdict is simply
+   * absent from the result — which is how the caller tells "never judged" from
+   * "judged `SAFE`".
+   */
+  latestVerdicts(turnIds: readonly string[]): Promise<ReadonlyMap<string, SafetyVerdict>>
   putObjectRecord(record: ObjectRecord): Promise<void>
   statObject(ref: string): Promise<ObjectRecord | undefined>
   /** Drop one object's index row. The bytes are the object store's business. */
@@ -487,12 +534,43 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     ).run(status, endedAt, turnId)
   }
 
-  const listTurns = async (sessionId: string, limit: number): Promise<readonly TurnRecord[]> => {
-    return all(
-      `SELECT ${TURN_COLUMNS} FROM turns WHERE session_id = ? ORDER BY ordinal DESC LIMIT ?`,
-      sessionId,
-      limit,
-    ).map(toTurn)
+  const getWorkspace = async (workspaceId: string): Promise<WorkspaceRecord | undefined> => {
+    const row = one(
+      `SELECT id, repo_root, repo_root_hash, settings_json, created_at
+       FROM workspaces WHERE id = ?`,
+      workspaceId,
+    )
+    if (row === undefined) return undefined
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      id: text(row, 'id'),
+      repoRoot: text(row, 'repo_root'),
+      repoRootHash: text(row, 'repo_root_hash'),
+      settingsJson: text(row, 'settings_json'),
+      createdAt: integer(row, 'created_at'),
+    }
+  }
+
+  const listTurns = async (sessionId: string, query: TurnPageQuery): Promise<TurnPage> => {
+    // One row more than asked for, because "is there another page?" cannot be
+    // answered from a full page: a page that exactly exhausts the session and a
+    // page with one more row behind it look identical. `nextCursor` is derived
+    // from the probe row and the probe row is then dropped, so the caller never
+    // sees it — which is what makes the absence of `nextCursor` meaningful
+    // rather than an optimistic guess.
+    const probe = query.limit + 1
+    const rows = await all(
+      query.cursor === undefined
+        ? `SELECT ${TURN_COLUMNS} FROM turns WHERE session_id = ? ORDER BY ordinal DESC LIMIT ?`
+        : `SELECT ${TURN_COLUMNS} FROM turns
+           WHERE session_id = ? AND ordinal < ? ORDER BY ordinal DESC LIMIT ?`,
+      ...(query.cursor === undefined ? [sessionId, probe] : [sessionId, query.cursor, probe]),
+    )
+    const turns = rows.slice(0, query.limit).map(toTurn)
+    const last = turns.at(-1)
+    return rows.length > query.limit && last !== undefined
+      ? { turns, nextCursor: last.ordinal }
+      : { turns }
   }
 
   const getTurn = async (turnId: string): Promise<TurnRecord | undefined> => {
@@ -746,6 +824,42 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     return row === undefined ? undefined : toVerdict(row)
   }
 
+  const countFileChanges = async (
+    turnIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> => {
+    // An empty `IN ()` is a syntax error rather than a vacuous truth, and the
+    // empty page is the first thing a fresh session produces.
+    if (turnIds.length === 0) return new Map()
+    const rows = await all(
+      `SELECT turn_id, count(*) AS n FROM file_changes
+       WHERE turn_id IN (${turnIds.map(() => '?').join(', ')}) GROUP BY turn_id`,
+      ...turnIds,
+    )
+    return new Map(rows.map(row => [text(row, 'turn_id'), integer(row, 'n')]))
+  }
+
+  const latestVerdicts = async (
+    turnIds: readonly string[],
+  ): Promise<ReadonlyMap<string, SafetyVerdict>> => {
+    if (turnIds.length === 0) return new Map()
+    // Sorted across all the requested turns rather than per turn, then resolved
+    // first-pass-wins in JavaScript. Per-turn ordering would need a window
+    // function for no gain: the tie-break below is the same one
+    // `getLatestVerdict` uses, so the two agree on every turn.
+    const rows = await all(
+      `SELECT ${VERDICT_COLUMNS} FROM safety_verdicts
+       WHERE turn_id IN (${turnIds.map(() => '?').join(', ')})
+       ORDER BY evaluated_at DESC, id DESC`,
+      ...turnIds,
+    )
+    const latest = new Map<string, SafetyVerdict>()
+    for (const row of rows) {
+      const verdict = toVerdict(row)
+      if (!latest.has(verdict.turnId)) latest.set(verdict.turnId, verdict)
+    }
+    return latest
+  }
+
   const getCheckpoint = async (id: string): Promise<CheckpointRecord | undefined> => {
     const row = one(`SELECT ${CHECKPOINT_COLUMNS} FROM checkpoints WHERE id = ?`, id)
     return row === undefined ? undefined : toCheckpoint(row)
@@ -823,6 +937,7 @@ export function createRepository(handle: IndexHandle): TraceRepository {
 
   return {
     upsertWorkspace,
+    getWorkspace,
     upsertSession,
     upsertTurn,
     closeTurn,
@@ -838,12 +953,14 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     listCheckpointPaths,
     putFileChange,
     listFileChanges,
+    countFileChanges,
     putCommand,
     listCommands,
     putTest,
     listTests,
     putSafetyVerdict,
     getLatestVerdict,
+    latestVerdicts,
     putObjectRecord,
     statObject,
     deleteObject,
