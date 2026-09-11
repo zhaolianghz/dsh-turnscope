@@ -105,7 +105,7 @@ export const change = (
   path: string,
   overrides: Partial<TurnDetailData['changes'][number]> = {},
 ): TurnDetailData['changes'][number] => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: `c-${path}`,
   turnId: 't-1',
   path,
@@ -134,7 +134,7 @@ export const fullVerdict = (
   level: SafetySummaryDto['level'],
   overrides: Partial<NonNullable<TurnDetailData['safety']>> = {},
 ): NonNullable<TurnDetailData['safety']> => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: 'v-1',
   turnId: 't-1',
   level,
@@ -150,7 +150,7 @@ export const command = (
   command_: string,
   overrides: Partial<TurnDetailData['commands'][number]> = {},
 ): TurnDetailData['commands'][number] => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: `cmd-${command_}`,
   turnId: 't-1',
   command: command_,
@@ -160,7 +160,7 @@ export const command = (
 export const test = (
   overrides: Partial<TurnDetailData['tests'][number]> = {},
 ): TurnDetailData['tests'][number] => ({
-  schemaVersion: 2,
+  schemaVersion: 3,
   id: 'test-1',
   turnId: 't-1',
   kind: 'test',

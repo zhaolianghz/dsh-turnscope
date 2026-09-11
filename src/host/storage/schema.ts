@@ -239,6 +239,53 @@ CREATE INDEX safety_verdicts_turn_id ON safety_verdicts (turn_id);
 `
 
 /**
+ * Schema 3: the V0.2 Safe Rewind, per
+ * `docs/superpowers/specs/2026-09-11-v0.2-v0.3-recovery-design.md §4.4`.
+ *
+ * Two tables and nothing else. The bytes the rewind needs are already on disk
+ * via the V0.2 `checkpoint_paths.blob_ref` (per spec §4.4 footnote: "before
+ * blob refs come from `checkpoint_paths`, not duplicated here"), so the only
+ * new persistence is the plan itself and the journal that makes a crashed
+ * apply recoverable on next boot. Both tables are `STRICT` like every other
+ * table; both have `created_at` even though only the planner needs it, so a
+ * later audit can answer "when was this preview surfaced" without joining.
+ *
+ * No `REFERENCES` clauses, mirroring the v1 / v2 design: a journal row written
+ * before its plan is a tolerable ordering, and turning it into a lost record
+ * via a foreign key would cost more than it bought. The journal's primary key
+ * is `(plan_id, seq)` rather than a synthetic id so the runner can write two
+ * entries per op (`applied`, then `verified`) without a separate sequence
+ * table to consult.
+ */
+const SCHEMA_V3 = `
+CREATE TABLE recovery_plans (
+  id TEXT PRIMARY KEY NOT NULL,
+  turn_id TEXT NOT NULL,
+  verdict_json TEXT NOT NULL,
+  evaluation_id TEXT NOT NULL,
+  state_hash TEXT NOT NULL,
+  operations_json TEXT NOT NULL,
+  before_checkpoint_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE recovery_journal (
+  plan_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  operation_json TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  error_json TEXT,
+  PRIMARY KEY (plan_id, seq, state)
+) STRICT;
+
+CREATE INDEX idx_recovery_plans_turn ON recovery_plans(turn_id);
+CREATE INDEX idx_recovery_journal_state ON recovery_journal(plan_id, state);
+`
+
+/**
  * Ordered migrations: `MIGRATIONS[n]` upgrades a database from `user_version`
  * `n` to `n + 1`, so applying every entry from the file's current version takes
  * it to {@link SCHEMA_VERSION}.
@@ -247,4 +294,4 @@ CREATE INDEX safety_verdicts_turn_id ON safety_verdicts (turn_id);
  * inside one `BEGIN IMMEDIATE` transaction, so a failure part-way through leaves
  * `user_version` — and therefore the schema — exactly where it started.
  */
-export const MIGRATIONS: readonly string[] = Object.freeze([SCHEMA_V1, SCHEMA_V2])
+export const MIGRATIONS: readonly string[] = Object.freeze([SCHEMA_V1, SCHEMA_V2, SCHEMA_V3])

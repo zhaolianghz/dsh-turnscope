@@ -4,7 +4,7 @@
  * It is a literal type as well as a value so records can be narrowed on it.
  * Bump only alongside a storage migration in `src/host/storage`.
  */
-export declare const SCHEMA_VERSION = 2;
+export declare const SCHEMA_VERSION = 3;
 /**
  * Lifecycle of a single turn, per `docs/PRD.md §7.1`.
  *

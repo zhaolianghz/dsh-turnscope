@@ -7,6 +7,7 @@
  * about the reasons — never about the verdict, which belongs to the aggregator.
  */
 import { describe, expect, it } from 'vitest'
+import { SCHEMA_VERSION } from '../../../src/host/domain/types.ts'
 import {
   s001PreCheckpointMissing,
   s002PostCheckpointMissing,
@@ -259,7 +260,7 @@ describe('S010 evidence incomplete', () => {
 describe('S011 binary change', () => {
   const binaryChange = change({ path: 'logo.png', kind: 'binary_changed' })
   const withBeforeCopy = [
-    { schemaVersion: 2 as const, id: '', checkpointId: '', path: 'logo.png', status: 'clean' as const, staged: false, binary: true, blobRef: 'objects/ab/cdef' },
+    { schemaVersion: 3 as const, id: '', checkpointId: '', path: 'logo.png', status: 'clean' as const, staged: false, binary: true, blobRef: 'objects/ab/cdef' },
   ]
 
   it('sends a binary change to fork-only when its earlier bytes were not kept', () => {

@@ -1,4 +1,5 @@
 import type { ActivityRecord, CheckpointPathState, CheckpointRecord, CommandRecord, EvidenceCompleteness, FileChange, ObjectRecord, SafetyVerdict, SessionRecord, TestRecord, TurnRecord, TurnStatus, WorkspaceRecord } from '../domain/types.ts';
+import type { RecoveryJournalEntry, RecoveryPlan, RecoveryPlanStatus } from '../recovery/types.ts';
 import type { IndexHandle } from './sqlite-index.ts';
 /**
  * How much of a session's turn list to read, and from where.
@@ -85,6 +86,33 @@ export interface TraceRepository {
      * "judged `SAFE`".
      */
     latestVerdicts(turnIds: readonly string[]): Promise<ReadonlyMap<string, SafetyVerdict>>;
+    /**
+     * V0.2 Safe Rewind: persist a plan and overwrite any existing row with the
+     * same id. The id is deterministic from `<turnId>:plan:<evaluationId>`, so a
+     * re-preview that produces the same evaluation re-uses the row instead of
+     * leaving a stale one behind.
+     */
+    putRecoveryPlan(record: RecoveryPlan): Promise<void>;
+    /** V0.2: read a plan by id; absent when never written or already deleted. */
+    getRecoveryPlan(id: string): Promise<RecoveryPlan | undefined>;
+    /** V0.2: list every plan for a turn, newest first. */
+    listRecoveryPlans(turnId: string): Promise<readonly RecoveryPlan[]>;
+    /** V0.2: move a plan to one of its terminal statuses, no-op if already there. */
+    updateRecoveryPlanStatus(id: string, status: RecoveryPlanStatus): Promise<void>;
+    /** V0.2: append one journal entry. PK is `(plan_id, seq)`, so replay is a no-op. */
+    putRecoveryJournalEntry(record: RecoveryJournalEntry): Promise<void>;
+    /** V0.2: read every journal entry for a plan, in `seq` ascending order. */
+    listRecoveryJournal(planId: string): Promise<readonly RecoveryJournalEntry[]>;
+    /**
+     * V0.2: every plan the next boot should surface to the user.
+     *
+     * "Unfinished" is broader than "still applying": a plan left in `previewed`
+     * after its `expiresAt` has passed is also unfinished, because the user
+     * might still want to know it was offered and refused. Plans in
+     * `completed` / `failed` / `cancelled` are excluded so the UI does not have
+     * to filter them out again.
+     */
+    listUnfinishedRecoveryPlans(now: number): Promise<readonly RecoveryPlan[]>;
     putObjectRecord(record: ObjectRecord): Promise<void>;
     statObject(ref: string): Promise<ObjectRecord | undefined>;
     /** Drop one object's index row. The bytes are the object store's business. */

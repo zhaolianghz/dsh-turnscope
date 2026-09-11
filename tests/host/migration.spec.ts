@@ -58,7 +58,7 @@ describe('schema 1 to schema 2', () => {
     try {
       const version = handle.db.prepare('PRAGMA user_version').get() as { user_version: number }
       expect(version.user_version).toBe(SCHEMA_VERSION)
-      expect(SCHEMA_VERSION).toBe(2)
+      expect(SCHEMA_VERSION).toBe(3)
     } finally {
       handle.close()
     }

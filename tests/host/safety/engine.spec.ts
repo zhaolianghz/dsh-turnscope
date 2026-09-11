@@ -202,6 +202,6 @@ describe('the persisted verdict', () => {
     expect(verdict.id).toBe('s-1:turn:3:safety')
     expect(verdict.turnId).toBe('s-1:turn:3')
     expect(verdict.evaluatedAt).toBe(1_700_000_099_000)
-    expect(verdict.schemaVersion).toBe(2)
+    expect(verdict.schemaVersion).toBe(3)
   })
 })

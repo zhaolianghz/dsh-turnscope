@@ -109,8 +109,8 @@ describe('identifiers', () => {
 })
 
 describe('domain types', () => {
-  it('defaults the schema version to 2', () => {
-    expect(SCHEMA_VERSION).toBe(2)
+  it('defaults the schema version to 3', () => {
+    expect(SCHEMA_VERSION).toBe(3)
   })
 
   it('honours the NormalizedEvent shape', () => {
@@ -126,7 +126,7 @@ describe('domain types', () => {
     }
 
     expect(event).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       workspaceId: 'w1',
       sessionId: 's1',
       turnId: 's1:turn:0',

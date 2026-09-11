@@ -28,6 +28,14 @@ import type {
   ValidationStatus,
   WorkspaceRecord,
 } from '../domain/types.ts'
+import type {
+  RecoveryFileOperation,
+  RecoveryJournalEntry,
+  RecoveryJournalState,
+  RecoveryPlan,
+  RecoveryPlanStatus,
+  RecoveryResult,
+} from '../recovery/types.ts'
 import { TERMINAL_TURN_STATUSES } from '../domain/turn-state.ts'
 import type { IndexHandle } from './sqlite-index.ts'
 
@@ -118,6 +126,33 @@ export interface TraceRepository {
    * "judged `SAFE`".
    */
   latestVerdicts(turnIds: readonly string[]): Promise<ReadonlyMap<string, SafetyVerdict>>
+  /**
+   * V0.2 Safe Rewind: persist a plan and overwrite any existing row with the
+   * same id. The id is deterministic from `<turnId>:plan:<evaluationId>`, so a
+   * re-preview that produces the same evaluation re-uses the row instead of
+   * leaving a stale one behind.
+   */
+  putRecoveryPlan(record: RecoveryPlan): Promise<void>
+  /** V0.2: read a plan by id; absent when never written or already deleted. */
+  getRecoveryPlan(id: string): Promise<RecoveryPlan | undefined>
+  /** V0.2: list every plan for a turn, newest first. */
+  listRecoveryPlans(turnId: string): Promise<readonly RecoveryPlan[]>
+  /** V0.2: move a plan to one of its terminal statuses, no-op if already there. */
+  updateRecoveryPlanStatus(id: string, status: RecoveryPlanStatus): Promise<void>
+  /** V0.2: append one journal entry. PK is `(plan_id, seq)`, so replay is a no-op. */
+  putRecoveryJournalEntry(record: RecoveryJournalEntry): Promise<void>
+  /** V0.2: read every journal entry for a plan, in `seq` ascending order. */
+  listRecoveryJournal(planId: string): Promise<readonly RecoveryJournalEntry[]>
+  /**
+   * V0.2: every plan the next boot should surface to the user.
+   *
+   * "Unfinished" is broader than "still applying": a plan left in `previewed`
+   * after its `expiresAt` has passed is also unfinished, because the user
+   * might still want to know it was offered and refused. Plans in
+   * `completed` / `failed` / `cancelled` are excluded so the UI does not have
+   * to filter them out again.
+   */
+  listUnfinishedRecoveryPlans(now: number): Promise<readonly RecoveryPlan[]>
   putObjectRecord(record: ObjectRecord): Promise<void>
   statObject(ref: string): Promise<ObjectRecord | undefined>
   /** Drop one object's index row. The bytes are the object store's business. */
@@ -875,6 +910,189 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     ).map(toCheckpoint)
   }
 
+  // ---------------------------------------------------------------------------
+  // V0.2 Safe Rewind — recovery_plans and recovery_journal.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * JSON columns in this slice mirror the V0.1 pattern: `evidence_json`,
+   * `reasons_json`, `allowed_actions_json`. The shapes they store are owned
+   * by `recovery/types.ts`, and re-typing them here would let a stored plan
+   * drift from a typed plan without anyone noticing; the helpers below
+   * therefore round-trip via `JSON.parse` and assert the top-level shape.
+   */
+
+  /** Throw if a stored verdict JSON is not the shape we wrote. */
+  function parseVerdictJson(raw: string): SafetyVerdict {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`recovery_plans.verdict_json: expected an object, read ${raw}`)
+    }
+    return parsed as SafetyVerdict
+  }
+
+  /** Throw if a stored operations array is not an array of operations. */
+  function parseOperationsJson(raw: string): readonly RecoveryFileOperation[] {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) {
+      throw new Error(`recovery_plans.operations_json: expected a JSON array, read ${raw}`)
+    }
+    return parsed as readonly RecoveryFileOperation[]
+  }
+
+  function parseJournalOperationJson(raw: string): RecoveryFileOperation {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`recovery_journal.operation_json: expected an object, read ${raw}`)
+    }
+    return parsed as RecoveryFileOperation
+  }
+
+  function parseJournalErrorJson(raw: string): { code: string; message: string } {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`recovery_journal.error_json: expected an object, read ${raw}`)
+    }
+    return parsed as { code: string; message: string }
+  }
+
+  const toRecoveryPlan = (row: Row): RecoveryPlan => ({
+    schemaVersion: SCHEMA_VERSION,
+    id: text(row, 'id'),
+    turnId: text(row, 'turn_id'),
+    verdict: parseVerdictJson(text(row, 'verdict_json')),
+    evaluationId: text(row, 'evaluation_id'),
+    stateHash: text(row, 'state_hash'),
+    operations: parseOperationsJson(text(row, 'operations_json')),
+    beforeCheckpointId: text(row, 'before_checkpoint_id'),
+    status: text(row, 'status') as RecoveryPlanStatus,
+    createdAt: integer(row, 'created_at'),
+    expiresAt: integer(row, 'expires_at'),
+  })
+
+  const toRecoveryJournalEntry = (row: Row): RecoveryJournalEntry => ({
+    schemaVersion: SCHEMA_VERSION,
+    planId: text(row, 'plan_id'),
+    seq: integer(row, 'seq'),
+    operation: parseJournalOperationJson(text(row, 'operation_json')),
+    state: text(row, 'state') as RecoveryJournalState,
+    occurredAt: integer(row, 'occurred_at'),
+    ...absent('error', row['error_json'] === null ? undefined : parseJournalErrorJson(text(row, 'error_json'))),
+  })
+
+  const RECOVERY_PLAN_COLUMNS =
+    'id, turn_id, verdict_json, evaluation_id, state_hash, operations_json, before_checkpoint_id, status, created_at, expires_at'
+
+  const RECOVERY_JOURNAL_COLUMNS =
+    'plan_id, seq, state, operation_json, occurred_at, error_json'
+
+  const putRecoveryPlan = async (record: RecoveryPlan): Promise<void> => {
+    // A re-preview produces the same plan id, so the second write *replaces*
+    // the first rather than leaving a stale plan alongside the new one. The
+    // journal table has no FK on `plan_id`, so old journal rows survive the
+    // replacement; that is the design — the journal is a forensic record,
+    // not a live one, and any future cleanup is retention's job.
+    statement(
+      `INSERT INTO recovery_plans (${RECOVERY_PLAN_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         turn_id = excluded.turn_id,
+         verdict_json = excluded.verdict_json,
+         evaluation_id = excluded.evaluation_id,
+         state_hash = excluded.state_hash,
+         operations_json = excluded.operations_json,
+         before_checkpoint_id = excluded.before_checkpoint_id,
+         status = excluded.status,
+         created_at = excluded.created_at,
+         expires_at = excluded.expires_at`,
+    ).run(
+      record.id,
+      record.turnId,
+      JSON.stringify(record.verdict),
+      record.evaluationId,
+      record.stateHash,
+      JSON.stringify(record.operations),
+      record.beforeCheckpointId,
+      record.status,
+      record.createdAt,
+      record.expiresAt,
+    )
+  }
+
+  const getRecoveryPlan = async (id: string): Promise<RecoveryPlan | undefined> => {
+    const row = one(
+      `SELECT ${RECOVERY_PLAN_COLUMNS} FROM recovery_plans WHERE id = ?`,
+      id,
+    )
+    return row === undefined ? undefined : toRecoveryPlan(row)
+  }
+
+  const listRecoveryPlans = async (turnId: string): Promise<readonly RecoveryPlan[]> => {
+    return all(
+      `SELECT ${RECOVERY_PLAN_COLUMNS} FROM recovery_plans
+       WHERE turn_id = ?
+       ORDER BY created_at DESC, id ASC`,
+      turnId,
+    ).map(toRecoveryPlan)
+  }
+
+  const updateRecoveryPlanStatus = async (
+    id: string,
+    status: RecoveryPlanStatus,
+  ): Promise<void> => {
+    // No terminal-state guard: a plan may legitimately be re-classified
+    // (e.g. `previewed` → `cancelled` once the apply expires), and the
+    // transitions the runner drives already take care of themselves via the
+    // journal.
+    statement('UPDATE recovery_plans SET status = ? WHERE id = ?').run(status, id)
+  }
+
+  const putRecoveryJournalEntry = async (record: RecoveryJournalEntry): Promise<void> => {
+    // The PK is `(plan_id, seq, state)`. The runner writes one row per state
+    // transition (`prepared` → `temp_written` → `applied` → `verified`), so a
+    // duplicate write of the *same* state is a true no-op, while different
+    // states at the same seq land as distinct rows.
+    statement(
+      `INSERT INTO recovery_journal (${RECOVERY_JOURNAL_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(plan_id, seq, state) DO NOTHING`,
+    ).run(
+      record.planId,
+      record.seq,
+      record.state,
+      JSON.stringify(record.operation),
+      record.occurredAt,
+      nullable(record.error === undefined ? undefined : JSON.stringify(record.error)),
+    )
+  }
+
+  const listRecoveryJournal = async (
+    planId: string,
+  ): Promise<readonly RecoveryJournalEntry[]> => {
+    return all(
+      `SELECT ${RECOVERY_JOURNAL_COLUMNS} FROM recovery_journal
+       WHERE plan_id = ?
+       ORDER BY seq ASC, occurred_at ASC, state ASC`,
+      planId,
+    ).map(toRecoveryJournalEntry)
+  }
+
+  const listUnfinishedRecoveryPlans = async (
+    now: number,
+  ): Promise<readonly RecoveryPlan[]> => {
+    // `previewed` AND expiresAt < now ⇒ expired preview.
+    // `applying` ⇒ crashed mid-apply (no journal row, or last row not `verified`).
+    // The last clause — "no journal row" — catches the case where the runner
+    // never got as far as writing its first entry.
+    return all(
+      `SELECT ${RECOVERY_PLAN_COLUMNS} FROM recovery_plans
+       WHERE status = 'applying'
+          OR (status = 'previewed' AND expires_at < ?)
+       ORDER BY created_at ASC`,
+      now,
+    ).map(toRecoveryPlan)
+  }
+
   const putObjectRecord = async (record: ObjectRecord): Promise<void> => {
     statement(
       `INSERT INTO objects (ref, kind, byte_size, sha256, created_at)
@@ -961,6 +1179,13 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     putSafetyVerdict,
     getLatestVerdict,
     latestVerdicts,
+    putRecoveryPlan,
+    getRecoveryPlan,
+    listRecoveryPlans,
+    updateRecoveryPlanStatus,
+    putRecoveryJournalEntry,
+    listRecoveryJournal,
+    listUnfinishedRecoveryPlans,
     putObjectRecord,
     statObject,
     deleteObject,
