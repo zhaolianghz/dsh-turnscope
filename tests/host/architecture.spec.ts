@@ -158,4 +158,24 @@ describe('source invariants', () => {
       ),
     ).toEqual([])
   })
+
+  it('keeps the diff renderer pure and the diff reader behind the ports', async () => {
+    const files = await sources()
+    // The renderer has no runtime dependency at all: its only imports are
+    // type-only, which the compiler erases. It is a function from two line lists
+    // to hunks, which is why every case about how a change is shown can be
+    // tested without a repository, a store, or a file on disk.
+    const renderer = files.find(file => file.path === 'host/diff/unified.ts')
+    const imports = renderer?.text.match(/^import\b.*$/gm) ?? []
+    expect(imports.filter(line => !line.startsWith('import type'))).toEqual([])
+    // The reader assembles bytes that were already recorded, so it opens no file
+    // and runs no process of its own. Reading the worktree again would show the
+    // user bytes the turn did not produce — the file may have been edited since,
+    // which is what `S005` is about.
+    expect(
+      files
+        .filter(file => file.path.startsWith('host/diff/'))
+        .filter(file => /node:fs|node:child_process|execFile/.test(file.text)),
+    ).toEqual([])
+  })
 })

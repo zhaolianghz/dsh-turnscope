@@ -28,7 +28,7 @@
  * one of them is about the turn.
  */
 import type { ClientConnectionRpc } from '@deepseek-ai/dsh-client-connection/client';
-import type { EvaluateSafetyData, EvaluateSafetyRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, ReplyRead, TurnDetailData } from '../shared/contracts/api.ts';
+import type { EvaluateSafetyData, EvaluateSafetyRequest, GetDiffData, GetDiffRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, ReplyRead, TurnDetailData } from '../shared/contracts/api.ts';
 /**
  * The channel the DSH gateway owns.
  *
@@ -44,6 +44,14 @@ export interface TurnscopeHostApi {
     readonly listTurns: (request: ListTurnsRequest) => Promise<ReplyRead<ListTurnsData>>;
     readonly getTurnDetail: (request: GetTurnDetailRequest) => Promise<ReplyRead<TurnDetailData>>;
     readonly evaluateSafety: (request: EvaluateSafetyRequest) => Promise<ReplyRead<EvaluateSafetyData>>;
+    /**
+     * One path's diff.
+     *
+     * `absent` here means the turn did not change that path — the same `absent` the
+     * other lookups produce, which is what lets a caller render "no such change"
+     * without a second kind of nothing to handle.
+     */
+    readonly getDiff: (request: GetDiffRequest) => Promise<ReplyRead<GetDiffData>>;
 }
 /**
  * Build the API over a live connection.

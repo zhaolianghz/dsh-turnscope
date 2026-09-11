@@ -202,7 +202,8 @@ export function createTurnInspector(deps: InspectionDeps): TurnInspector {
       hints.map(hint => hint.path),
     )
 
-  return {    observe: async (turn, workspace, previousStatus) => {
+  return {
+    observe: async (turn, workspace, previousStatus) => {
       const wasRunning = previousStatus !== undefined && !isTerminal(previousStatus)
       const opensNow = previousStatus === undefined && !isTerminal(turn.status)
 

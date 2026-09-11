@@ -15,7 +15,8 @@
  * in-memory page of records.
  */
 import { API_VERSION } from '../../shared/contracts/api.ts';
-import type { EvaluateSafetyData, EvaluateSafetyRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, TurnDetailData, TurnscopeApiEnvelope, TurnscopeLookupReply } from '../../shared/contracts/api.ts';
+import type { EvaluateSafetyData, EvaluateSafetyRequest, GetDiffData, GetDiffRequest, GetTurnDetailRequest, ListTurnsData, ListTurnsRequest, TurnDetailData, TurnscopeApiEnvelope, TurnscopeLookupReply } from '../../shared/contracts/api.ts';
+import type { FileDiffReader } from '../diff/reader.ts';
 import type { TurnInspector } from '../inspection/types.ts';
 import type { TraceRepository } from '../storage/repository.ts';
 /**
@@ -32,6 +33,14 @@ export interface QueryDeps {
      * Used only by `evaluateSafety`. The rest of the API answers from storage.
      */
     readonly inspector: TurnInspector;
+    /**
+     * Used only by `getDiff`.
+     *
+     * Injected rather than built here because it reads git and the object store,
+     * and this module's whole reason for existing is that it does neither — it
+     * answers from the sink (`docs/ARCHITECTURE.md §28`).
+     */
+    readonly diffs: FileDiffReader;
 }
 export interface QueryService {
     listTurns(request: ListTurnsRequest): Promise<TurnscopeApiEnvelope<ListTurnsData>>;
@@ -45,6 +54,16 @@ export interface QueryService {
     getTurnDetail(request: GetTurnDetailRequest): Promise<TurnscopeLookupReply<TurnDetailData>>;
     /** `data: null` when there is no such turn, or no workspace to evaluate against. */
     evaluateSafety(request: EvaluateSafetyRequest): Promise<TurnscopeLookupReply<EvaluateSafetyData>>;
+    /**
+     * `data: null` when there is nothing to compare: no such turn, no workspace, or
+     * a path this turn did not change.
+     *
+     * All three answer the same way because they mean the same thing to a reader —
+     * "there is no such change" — and none of them is an error. The separate
+     * `availability` field inside a returned diff is where "there *is* a change and
+     * we cannot show it" goes, which is a different sentence and a different fix.
+     */
+    getDiff(request: GetDiffRequest): Promise<TurnscopeLookupReply<GetDiffData>>;
 }
 export declare function createQueryService(deps: QueryDeps): QueryService;
 /** Re-exported so a caller can check the version it is talking to. */

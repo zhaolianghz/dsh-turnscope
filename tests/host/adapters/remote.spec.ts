@@ -36,6 +36,8 @@ import {
   mountTurnscopeRemote,
   mountTurnscopeRemoteWhenReady,
 } from '../../../src/host/adapters/dsh/remote.ts'
+import type { FileDiff } from '../../../src/host/diff/types.ts'
+import type { FileDiffReader } from '../../../src/host/diff/reader.ts'
 import { SCHEMA_VERSION } from '../../../src/host/domain/types.ts'
 import type { WorkspaceRecord } from '../../../src/host/domain/types.ts'
 import type { TurnInspector } from '../../../src/host/inspection/types.ts'
@@ -63,6 +65,53 @@ const TURN = 's-1:turn:3'
 
 /** The same parameter shape the adapter registers, for the boundary probe below. */
 const PROBE_PARAMETER = { name: 'request', wire: 'request', source: 'json', codec: { mode: 'src-json' } } as const
+
+/**
+ * A diff with one changed line, built the way the reader builds one.
+ *
+ * Optional fields are spread in only when they have a value, never set to
+ * `undefined`: the gateway refuses an own `undefined` property, so a fixture
+ * that set one would fail at the boundary for a reason that has nothing to do
+ * with what the test is about.
+ */
+const textDiff = (path: string): FileDiff => ({
+  path,
+  kind: 'modified',
+  status: 'modified',
+  attribution: 'AGENT',
+  confidence: 'medium',
+  baseline: false,
+  before: { source: 'git-object', byteSize: 4, lineCount: 1, endsWithNewline: true },
+  after: { source: 'recovery-blob', byteSize: 4, lineCount: 1, endsWithNewline: true },
+  availability: {
+    kind: 'text',
+    truncated: false,
+    hunks: [
+      {
+        beforeStart: 1,
+        beforeCount: 1,
+        afterStart: 1,
+        afterCount: 1,
+        lines: [
+          { kind: 'remove', text: 'old', beforeLine: 1 },
+          { kind: 'add', text: 'new', afterLine: 1 },
+        ],
+      },
+    ],
+  },
+})
+
+/** The other shape a diff can have: nothing to render, and a reason. */
+const unavailableDiff = (path: string): FileDiff => ({
+  path,
+  kind: 'modified',
+  attribution: 'AGENT',
+  confidence: 'medium',
+  baseline: false,
+  before: { source: 'unknown', byteSize: 0, lineCount: 0, endsWithNewline: false },
+  after: { source: 'unknown', byteSize: 0, lineCount: 0, endsWithNewline: false, contentHash: 'sha256:a' },
+  availability: { kind: 'unavailable', reason: 'missing-blob', detail: 'The saved content is no longer on disk.' },
+})
 
 const workspace = (): WorkspaceRecord => ({
   schemaVersion: SCHEMA_VERSION,
@@ -122,6 +171,15 @@ describe('the Remote face', () => {
       latestVerdict: async () => undefined,
     }
 
+    const diffResults = new Map<string, FileDiff>()
+    const diffCalls: Array<{ turnId: string; path: string }> = []
+    const diffs: FileDiffReader = {
+      read: async (turn, _workspace, path) => {
+        diffCalls.push({ turnId: turn.id, path })
+        return diffResults.get(path)
+      },
+    }
+
     await repo.upsertWorkspace(workspace())
     await repo.upsertTurn(turnRecord({ id: TURN }))
 
@@ -146,7 +204,7 @@ describe('the Remote face', () => {
       for (const fiber of fibers.reverse()) await fiber.dispose()
     })
 
-    mountTurnscopeRemote(ctx, createQueryService({ sink: repo, inspector }), diagnostics)
+    mountTurnscopeRemote(ctx, createQueryService({ sink: repo, inspector, diffs }), diagnostics)
 
     const target = captured[0]
     if (target === undefined) throw new Error('the gateway installed no interceptor')
@@ -154,6 +212,8 @@ describe('the Remote face', () => {
       repo,
       diagnostics,
       refreshed,
+      diffResults,
+      diffCalls,
       channel: target.channel,
       claims: (endpoint: string) => target.matches(endpoint),
       /** One call exactly as the browser transport makes it. */
@@ -162,22 +222,19 @@ describe('the Remote face', () => {
     }
   }
 
-  it('claims its own three endpoints and nothing else', async () => {
+  it('claims its own endpoints and nothing else', async () => {
     const host = await mount()
+    const methods = ['listTurns', 'getTurnDetail', 'getDiff', 'evaluateSafety']
 
     expect(host.channel).toBe('/api')
-    expect(TURNSCOPE_INVOCATIONS.map(descriptor => descriptor.method)).toEqual([
-      'listTurns',
-      'getTurnDetail',
-      'evaluateSafety',
-    ])
-    for (const method of ['listTurns', 'getTurnDetail', 'evaluateSafety']) {
+    expect(TURNSCOPE_INVOCATIONS.map(descriptor => descriptor.method)).toEqual(methods)
+    for (const method of methods) {
       expect(host.claims(`${REMOTE_NAMESPACE}/${method}`)).toBe(true)
     }
     // The claim is a set of endpoints, not a namespace wildcard and not a
     // catch-all: a request for something we did not register has to fall
     // through to whoever does own it, including the first-party services.
-    expect(host.claims(`${REMOTE_NAMESPACE}/getDiff`)).toBe(false)
+    expect(host.claims(`${REMOTE_NAMESPACE}/rewind`)).toBe(false)
     expect(host.claims('messageFeedback/list')).toBe(false)
     expect(host.claims(REMOTE_NAMESPACE)).toBe(false)
   })
@@ -270,6 +327,67 @@ describe('the Remote face', () => {
     // `null` and not an absent field: the transport cannot carry `undefined`,
     // and "there is no such turn" is the host's answer, not a transport fault.
     expect(result.value).toEqual({ apiVersion: API_VERSION, data: null })
+  })
+
+  it('carries a recorded diff across the boundary unaltered', async () => {
+    const host = await mount()
+    host.diffResults.set('src/a.ts', textDiff('src/a.ts'))
+
+    const result = await host.call(`${REMOTE_NAMESPACE}/getDiff`, {
+      apiVersion: API_VERSION,
+      turnId: TURN,
+      path: 'src/a.ts',
+    })
+
+    // The reply arriving at all is the assertion that matters here: a diff is
+    // built out of optional fields — a `status` that is only known when a
+    // checkpoint row recorded it, a `contentHash` only when one was taken — and
+    // the boundary rejects the whole result over a single own `undefined`. This
+    // is where `docs/ARCHITECTURE.md §28.3` either holds or does not.
+    expect(result.ok).toBe(true)
+    expect(result.value).toEqual({
+      apiVersion: API_VERSION,
+      data: { diff: textDiff('src/a.ts') },
+    })
+  })
+
+  it('carries a diff with nothing to render, and why', async () => {
+    const host = await mount()
+    host.diffResults.set('src/b.ts', unavailableDiff('src/b.ts'))
+
+    const result = await host.call(`${REMOTE_NAMESPACE}/getDiff`, {
+      apiVersion: API_VERSION,
+      turnId: TURN,
+      path: 'src/b.ts',
+    })
+
+    // An unavailability is the answer a user gets when retention took the bytes
+    // away, so it has to survive the wire intact — reason, detail, and the
+    // fingerprint that was kept. A client that received a bare `null` here could
+    // not tell it apart from a path the turn never touched.
+    expect(result.ok).toBe(true)
+    expect(result.value).toEqual({
+      apiVersion: API_VERSION,
+      data: { diff: unavailableDiff('src/b.ts') },
+    })
+  })
+
+  it('refuses a diff request that does not name both a turn and a path', async () => {
+    const host = await mount()
+
+    const malformed = [
+      { apiVersion: API_VERSION, turnId: TURN },
+      { apiVersion: API_VERSION, turnId: TURN, path: '' },
+      { apiVersion: API_VERSION, turnId: TURN, path: 42 },
+      { apiVersion: API_VERSION, path: 'src/a.ts' },
+    ]
+    for (const request of malformed) {
+      const result = await host.call(`${REMOTE_NAMESPACE}/getDiff`, request)
+      expect(result.ok).toBe(false)
+    }
+    // A path that is only absent or wrong never reaches the reader, so the
+    // request cannot become a filesystem path of its own accord.
+    expect(host.diffCalls).toEqual([])
   })
 
   it('re-evaluates through the service that takes a fresh observation', async () => {
@@ -424,7 +542,7 @@ describe('the Remote face', () => {
     const diagnostics = new Diagnostics()
     const unmount = mountTurnscopeRemoteWhenReady(
       ctx,
-      createQueryService({ sink: {} as never, inspector: {} as never }),
+      createQueryService({ sink: {} as never, inspector: {} as never, diffs: {} as never }),
       diagnostics,
     )
 
@@ -453,7 +571,7 @@ describe('the Remote face', () => {
 
     const unmount = mountTurnscopeRemote(
       ctx,
-      createQueryService({ sink: {} as never, inspector: {} as never }),
+      createQueryService({ sink: {} as never, inspector: {} as never, diffs: {} as never }),
       diagnostics,
     )
 

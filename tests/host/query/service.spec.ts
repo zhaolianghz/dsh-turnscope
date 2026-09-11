@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type {
   EvaluateSafetyRequest,
+  GetDiffRequest,
   GetTurnDetailRequest,
   ListTurnsData,
   ListTurnsRequest,
@@ -20,6 +21,8 @@ import type {
 } from '../../../src/shared/contracts/api.ts'
 import { API_VERSION, TURN_PAGE_LIMIT, lookup, readReply } from '../../../src/shared/contracts/api.ts'
 import type { TurnscopeLookupReply } from '../../../src/shared/contracts/api.ts'
+import type { FileDiff } from '../../../src/host/diff/types.ts'
+import type { FileDiffReader } from '../../../src/host/diff/reader.ts'
 import { SCHEMA_VERSION } from '../../../src/host/domain/types.ts'
 import type {
   CommandRecord,
@@ -67,6 +70,39 @@ const verdictOn = (turnId: string, level: SafetyVerdict['level'], evaluatedAt: n
   ...verdict(level, evaluatedAt),
   id: `${turnId}:safety:${evaluatedAt}`,
   turnId,
+})
+
+/**
+ * The smallest diff that is still a real one: one text hunk, one added line.
+ *
+ * The service does not interpret a diff, so a fuller fixture would only be more
+ * to keep true. What matters here is that the value handed back is the value the
+ * reader produced, unreassembled.
+ */
+const fileDiff = (path: string): FileDiff => ({
+  path,
+  kind: 'modified',
+  attribution: 'AGENT',
+  confidence: 'high',
+  baseline: false,
+  before: { source: 'git-object', byteSize: 4, lineCount: 1, endsWithNewline: true },
+  after: { source: 'recovery-blob', byteSize: 4, lineCount: 1, endsWithNewline: true },
+  availability: {
+    kind: 'text',
+    truncated: false,
+    hunks: [
+      {
+        beforeStart: 1,
+        beforeCount: 1,
+        afterStart: 1,
+        afterCount: 1,
+        lines: [
+          { kind: 'remove', text: 'old', beforeLine: 1 },
+          { kind: 'add', text: 'new', afterLine: 1 },
+        ],
+      },
+    ],
+  },
 })
 
 const workspaceRecord = (): WorkspaceRecord => ({
@@ -149,10 +185,25 @@ describe('createQueryService', () => {
       latestVerdict: async () => undefined,
     }
 
+    // A recording double for the same reason the inspector is one: the reader
+    // itself is tested against a real repository elsewhere, and what is under
+    // test here is that the service resolves the workspace and the path and
+    // hands both to it.
+    const diffCalls: Array<{ turnId: string; workspace: TurnWorkspace; path: string }> = []
+    const diffResults = new Map<string, FileDiff>()
+    const diffs: FileDiffReader = {
+      read: async (turn, workspace, path) => {
+        diffCalls.push({ turnId: turn.id, workspace, path })
+        return diffResults.get(path)
+      },
+    }
+
     return {
       repo,
       refreshCalls,
-      service: createQueryService({ sink: repo, inspector }),
+      diffCalls,
+      diffResults,
+      service: createQueryService({ sink: repo, inspector, diffs }),
       /** Record a session's worth of turns, newest ordinal last. */
       seed: async (count: number) => {
         await repo.upsertWorkspace(workspaceRecord())
@@ -297,6 +348,54 @@ describe('createQueryService', () => {
       // the two are told apart by `readReply` naming them separately.
       expect(reply.data).toBeNull()
       expect(reply.apiVersion).toBe(API_VERSION)
+    })
+  })
+
+  describe('getDiff', () => {
+    it('reads the diff against the workspace the turn was recorded in', async () => {
+      const f = await fixture()
+      await f.seed(1)
+      f.diffResults.set('src/auth.ts', fileDiff('src/auth.ts'))
+
+      const reply = await f.service.getDiff({
+        ...base,
+        turnId: TURN,
+        path: 'src/auth.ts',
+      } satisfies GetDiffRequest)
+
+      // The repository root comes from the workspace record, not from the
+      // request: a client that could name the tree could ask for a diff against
+      // someone else's repository.
+      expect(f.diffCalls).toEqual([
+        { turnId: TURN, workspace: { workspaceId: 'ws-1', repoRoot: '/repo' }, path: 'src/auth.ts' },
+      ])
+      expect(found(reply).diff.availability.kind).toBe('text')
+      expect(found(reply).diff.attribution).toBe('AGENT')
+    })
+
+    it('says there is no diff for a path the turn did not change', async () => {
+      const f = await fixture()
+      await f.seed(1)
+
+      // The reader answers `undefined` for a path with no change row, and the
+      // service must pass that through as "not found" rather than as an empty
+      // diff: a client shown "no changes" for a file the turn never touched
+      // would be told something the host does not know.
+      const reply = await f.service.getDiff({ ...base, turnId: TURN, path: 'src/never.ts' })
+
+      expect(reply.data).toBeNull()
+      expect(reply.apiVersion).toBe(API_VERSION)
+    })
+
+    it('says there is no diff for a turn that is not recorded', async () => {
+      const f = await fixture()
+
+      const reply = await f.service.getDiff({ ...base, turnId: 's-1:turn:99', path: 'src/a.ts' })
+
+      expect(reply.data).toBeNull()
+      // Never asked: a turn that does not exist has no workspace to read from,
+      // and guessing one is the failure this guard exists to prevent.
+      expect(f.diffCalls).toEqual([])
     })
   })
 

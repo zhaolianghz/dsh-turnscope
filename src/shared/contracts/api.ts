@@ -34,6 +34,7 @@ import type {
   TestRecord,
   TurnStatus,
 } from '../../host/domain/types.ts'
+import type { FileDiff } from '../../host/diff/types.ts'
 
 /**
  * The contract version.
@@ -41,8 +42,15 @@ import type {
  * Bumped when a change to the shapes below would make an old client misread a
  * new host or vice versa. Adding a field is not such a change; changing what an
  * existing field means is.
+ *
+ * The version went to 2 when `getDiff` arrived, which by that rule is only an
+ * addition — a v1 bundle and a v2 host would have worked for everything but the
+ * new method. It was still bumped, because the client and the host are halves of
+ * *one* package: a pair that does not match is never a supported combination, and
+ * failing as a pair (one sentence naming both versions) is more useful than
+ * failing on the one request a user happened to click.
  */
-export const API_VERSION = 1
+export const API_VERSION = 2
 
 /**
  * The namespace our host methods are registered under, and therefore the prefix
@@ -249,6 +257,39 @@ export interface TurnDetailData {
   readonly tests: readonly TestRecord[]
   /** The freshest verdict on record. Never recomputed here — see `evaluateSafety`. */
   readonly safety?: SafetyVerdict
+}
+
+// ---------------------------------------------------------------------------
+// getDiff
+// ---------------------------------------------------------------------------
+
+export interface GetDiffRequest extends TurnscopeRequestBase {
+  readonly turnId: string
+  /**
+   * The path to compare, exactly as `getTurnDetail` reported it.
+   *
+   * It may only *select* a recorded change — the reader looks it up among the
+   * turn's changes and refuses anything else — so a path that arrived from a
+   * browser never becomes a filesystem or git path on its own.
+   */
+  readonly path: string
+}
+
+/**
+ * One path's diff.
+ *
+ * The diff is not a field that can be missing: `getDiff` answers `data: null`
+ * when the turn did not change the path, so a returned diff is always *about*
+ * something. Whether it can be *shown* is `availability`, which is a discriminated
+ * shape rather than a possibly-empty hunk list — see `host/diff/types.ts` for why
+ * "there is nothing to compare" must not be renderable as "nothing changed".
+ *
+ * Fetched per path and never bundled into `getTurnDetail` (`docs/ARCHITECTURE.md
+ * §44.2`): the bytes of every change in a turn would be the largest thing this
+ * API could send and the least often read.
+ */
+export interface GetDiffData {
+  readonly diff: FileDiff
 }
 
 // ---------------------------------------------------------------------------

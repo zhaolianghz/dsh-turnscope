@@ -20,6 +20,7 @@ import type { TraceRepository } from './storage/repository.ts'
 import { createExecFileRunner } from './git/command-runner.ts'
 import { createGitPort } from './git/git-port.ts'
 import { resolveRepositoryIdentity } from './git/identity.ts'
+import { createFileDiffReader } from './diff/reader.ts'
 import { createTurnInspector } from './inspection/inspector.ts'
 import type { TurnInspector } from './inspection/types.ts'
 import { createQueryService } from './query/service.ts'
@@ -425,7 +426,11 @@ export async function startTraceCore(
       // for the gateway (see `mountTurnscopeRemoteWhenReady`) and is best-effort
       // — a host with no Typert registry loses the API and keeps recording — so
       // it cannot fail this function.
-      const query = createQueryService({ sink: repository, inspector })
+      const query = createQueryService({
+        sink: repository,
+        inspector,
+        diffs: createFileDiffReader({ git, store, sink: repository }),
+      })
       const unmountRemote = mountTurnscopeRemoteWhenReady(ctx, query, diagnostics)
       return {
         flush: () => recorder.flush(),

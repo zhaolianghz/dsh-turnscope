@@ -18,6 +18,8 @@ import { API_VERSION, TURN_PAGE_LIMIT, envelope, lookup } from '../../shared/con
 import type {
   EvaluateSafetyData,
   EvaluateSafetyRequest,
+  GetDiffData,
+  GetDiffRequest,
   GetTurnDetailRequest,
   ListTurnsData,
   ListTurnsRequest,
@@ -27,6 +29,7 @@ import type {
   TurnscopeApiEnvelope,
   TurnscopeLookupReply,
 } from '../../shared/contracts/api.ts'
+import type { FileDiffReader } from '../diff/reader.ts'
 import type { SafetyVerdict, TurnRecord } from '../domain/types.ts'
 import type { TurnInspector, TurnWorkspace } from '../inspection/types.ts'
 import type { TraceRepository } from '../storage/repository.ts'
@@ -57,6 +60,14 @@ export interface QueryDeps {
    * Used only by `evaluateSafety`. The rest of the API answers from storage.
    */
   readonly inspector: TurnInspector
+  /**
+   * Used only by `getDiff`.
+   *
+   * Injected rather than built here because it reads git and the object store,
+   * and this module's whole reason for existing is that it does neither — it
+   * answers from the sink (`docs/ARCHITECTURE.md §28`).
+   */
+  readonly diffs: FileDiffReader
 }
 
 export interface QueryService {
@@ -71,6 +82,16 @@ export interface QueryService {
   getTurnDetail(request: GetTurnDetailRequest): Promise<TurnscopeLookupReply<TurnDetailData>>
   /** `data: null` when there is no such turn, or no workspace to evaluate against. */
   evaluateSafety(request: EvaluateSafetyRequest): Promise<TurnscopeLookupReply<EvaluateSafetyData>>
+  /**
+   * `data: null` when there is nothing to compare: no such turn, no workspace, or
+   * a path this turn did not change.
+   *
+   * All three answer the same way because they mean the same thing to a reader —
+   * "there is no such change" — and none of them is an error. The separate
+   * `availability` field inside a returned diff is where "there *is* a change and
+   * we cannot show it" goes, which is a different sentence and a different fix.
+   */
+  getDiff(request: GetDiffRequest): Promise<TurnscopeLookupReply<GetDiffData>>
 }
 
 /** Clamp a client-supplied page size into something a SQLite read can serve. */
@@ -80,7 +101,7 @@ const clampLimit = (requested: number): number => {
 }
 
 export function createQueryService(deps: QueryDeps): QueryService {
-  const { sink, inspector } = deps
+  const { sink, inspector, diffs } = deps
 
   const summarize = (
     turn: TurnRecord,
@@ -165,6 +186,21 @@ export function createQueryService(deps: QueryDeps): QueryService {
         verdict: result.verdict,
         changeCount: result.changeSet?.changes.length ?? 0,
       })
+    },
+
+    getDiff: async request => {
+      const turn = await sink.getTurn(request.turnId)
+      if (turn === undefined) return lookup<GetDiffData>(undefined)
+
+      // Like `evaluateSafety`, the workspace is looked up rather than remembered.
+      // It is only needed for the *before* side of a file that was clean when the
+      // turn began, but the reader decides that, so it is passed the root to use
+      // or not use.
+      const workspace = await sink.getWorkspace(turn.workspaceId)
+      if (workspace === undefined) return lookup<GetDiffData>(undefined)
+
+      const diff = await diffs.read(turn, toTurnWorkspace(workspace), request.path)
+      return lookup<GetDiffData>(diff === undefined ? undefined : { diff })
     },
   }
 }

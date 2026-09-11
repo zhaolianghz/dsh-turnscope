@@ -163,6 +163,23 @@ describe('agent changes', () => {
     })
   })
 
+  it('calls a disappearance deleted when the path was clean at PRE', () => {
+    // The common shape of a deletion: the file was committed and untouched when
+    // the turn began, so PRE has no row for it and the only evidence is the POST
+    // row saying it is gone. Dropping the case reported a turn that deleted a
+    // file as having changed nothing. The before-content is not fingerprinted
+    // here — git's copy at PRE's HEAD is it — hence `medium` rather than `high`.
+    const set = turn({ postPaths: [state('src/gone.ts', 'deleted', 'sha256:g')] })
+
+    expect(only(set.changes)).toMatchObject({
+      kind: 'deleted',
+      attribution: 'AGENT',
+      confidence: 'medium',
+      baseline: false,
+      afterHash: 'sha256:g',
+    })
+  })
+
   it('detects a rename and carries where it came from', () => {
     const set = turn({
       prePaths: [state('src/old.ts', 'clean', 'sha256:o')],

@@ -37,6 +37,7 @@ import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry'
 import { API_VERSION, REMOTE_NAMESPACE } from '../../../shared/contracts/api.ts'
 import type {
   EvaluateSafetyRequest,
+  GetDiffRequest,
   GetTurnDetailRequest,
   ListTurnsRequest,
 } from '../../../shared/contracts/api.ts'
@@ -60,16 +61,18 @@ const descriptor = (method: string): InvocationDescriptor => ({
 })
 
 /**
- * The three endpoints of `docs/ARCHITECTURE.md §28`, in the order the gateway
- * will see them.
+ * The four endpoints of `docs/ARCHITECTURE.md §28`, in the order the gateway will
+ * see them.
  *
- * `getDiff` is deliberately absent: §28.3 describes it as a method, and it is a
- * method we have not written. Declaring a descriptor for it would make the host
- * claim an endpoint that answers nothing.
+ * A descriptor is a claim that the endpoint answers, so this list is the whole
+ * statement of what this host exposes — an entry without a method behind it would
+ * be an endpoint that 500s, and the smoke harness in
+ * `docs/spikes/client-remote-smoke/` calls one of these against a real gateway.
  */
 export const TURNSCOPE_INVOCATIONS: readonly InvocationDescriptor[] = [
   descriptor('listTurns'),
   descriptor('getTurnDetail'),
+  descriptor('getDiff'),
   descriptor('evaluateSafety'),
 ]
 
@@ -127,6 +130,10 @@ export class TurnscopeRemoteService extends TypertRemoteService {
   evaluateSafety(request: EvaluateSafetyRequest) {
     return this.query.evaluateSafety(requireTurnRequest<EvaluateSafetyRequest>(request))
   }
+
+  getDiff(request: GetDiffRequest) {
+    return this.query.getDiff(requireGetDiffRequest(request))
+  }
 }
 
 /**
@@ -169,6 +176,13 @@ function requireListTurnsRequest(value: unknown): ListTurnsRequest {
 
 function requireTurnRequest<T>(value: unknown): T {
   return requireRequest(value, ['turnId']) as unknown as T
+}
+
+function requireGetDiffRequest(value: unknown): GetDiffRequest {
+  // The path is checked to be a non-empty string and nothing more. Whether it
+  // names a change of this turn is a *question the query answers*, not a
+  // validation: rejecting it here would need this layer to read the database.
+  return requireRequest(value, ['turnId', 'path']) as unknown as GetDiffRequest
 }
 
 /**

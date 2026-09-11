@@ -105,15 +105,50 @@ describe('createHostApi', () => {
     expect(answer.kind).toBe('unusable')
   })
 
-  it('calls each of the three endpoints by its own name', async () => {
+  it('reads a diff, including one the host could not produce', async () => {
+    const diff = {
+      path: 'src/a.ts',
+      kind: 'modified',
+      attribution: 'AGENT',
+      confidence: 'medium',
+      baseline: false,
+      before: { source: 'git-object', byteSize: 4, lineCount: 1, endsWithNewline: true },
+      after: { source: 'recovery-blob', byteSize: 4, lineCount: 1, endsWithNewline: true },
+      availability: { kind: 'unavailable', reason: 'missing-blob', detail: 'gone' },
+    }
+    const { rpc, call } = rpcOf({ ok: true, value: { apiVersion: API_VERSION, data: { diff } } })
+
+    await expect(
+      createHostApi(rpc).getDiff({ apiVersion: API_VERSION, turnId: 't', path: 'src/a.ts' }),
+    ).resolves.toEqual({ kind: 'value', value: { diff } })
+
+    // The path travels inside the request and nowhere else: the client never
+    // names a filesystem path to the host, it names a path the host already
+    // recorded (`docs/ARCHITECTURE.md §12.3`).
+    expect(call).toHaveBeenCalledWith(API_CHANNEL, 'turnscope/getDiff', {
+      args: { request: { apiVersion: API_VERSION, turnId: 't', path: 'src/a.ts' } },
+    })
+  })
+
+  it('reads "no diff for that path" as an answer, not as a failure', async () => {
+    const { rpc } = rpcOf({ ok: true, value: { apiVersion: API_VERSION, data: null } })
+
+    await expect(
+      createHostApi(rpc).getDiff({ apiVersion: API_VERSION, turnId: 't', path: 'src/none.ts' }),
+    ).resolves.toEqual({ kind: 'absent' })
+  })
+
+  it('calls each endpoint by its own name', async () => {
     const { rpc, call } = rpcOf({ ok: true, value: listing })
     const api = createHostApi(rpc)
 
     await api.getTurnDetail({ apiVersion: API_VERSION, turnId: 't' })
+    await api.getDiff({ apiVersion: API_VERSION, turnId: 't', path: 'src/a.ts' })
     await api.evaluateSafety({ apiVersion: API_VERSION, turnId: 't' })
 
     expect(call.mock.calls.map(([, endpoint]) => endpoint)).toEqual([
       'turnscope/getTurnDetail',
+      'turnscope/getDiff',
       'turnscope/evaluateSafety',
     ])
   })

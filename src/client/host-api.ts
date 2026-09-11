@@ -36,6 +36,8 @@ import {
 import type {
   EvaluateSafetyData,
   EvaluateSafetyRequest,
+  GetDiffData,
+  GetDiffRequest,
   GetTurnDetailRequest,
   ListTurnsData,
   ListTurnsRequest,
@@ -59,6 +61,14 @@ export interface TurnscopeHostApi {
   readonly listTurns: (request: ListTurnsRequest) => Promise<ReplyRead<ListTurnsData>>
   readonly getTurnDetail: (request: GetTurnDetailRequest) => Promise<ReplyRead<TurnDetailData>>
   readonly evaluateSafety: (request: EvaluateSafetyRequest) => Promise<ReplyRead<EvaluateSafetyData>>
+  /**
+   * One path's diff.
+   *
+   * `absent` here means the turn did not change that path — the same `absent` the
+   * other lookups produce, which is what lets a caller render "no such change"
+   * without a second kind of nothing to handle.
+   */
+  readonly getDiff: (request: GetDiffRequest) => Promise<ReplyRead<GetDiffData>>
 }
 
 /**
@@ -101,6 +111,7 @@ export function createHostApi(rpc: ClientConnectionRpc): TurnscopeHostApi {
     listTurns: (request) => call<ListTurnsData>('listTurns', request),
     getTurnDetail: (request) => call<TurnDetailData>('getTurnDetail', request),
     evaluateSafety: (request) => call<EvaluateSafetyData>('evaluateSafety', request),
+    getDiff: (request) => call<GetDiffData>('getDiff', request),
   }
 }
 

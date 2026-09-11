@@ -62,6 +62,18 @@ export interface GitPort {
     hashObject(cwd: string, path: string): Promise<string | undefined>;
     /** The bytes of a stored blob. */
     blob(cwd: string, oid: string): Promise<Uint8Array | undefined>;
+    /**
+     * The bytes a path had in a commit-ish, e.g. `HEAD` or the commit a turn
+     * started from.
+     *
+     * This is how the *before* side of a diff is recovered for a file that was
+     * clean when the turn began: no checkpoint copied it, because nothing about it
+     * had changed yet, and the committed content is not an approximation of the
+     * before state — it **is** the before state. Reads only, like everything else
+     * on this port. A path is resolved from the top of the worktree, so a caller
+     * should pass the repository root.
+     */
+    blobAt(cwd: string, treeish: string, path: string): Promise<Uint8Array | undefined>;
     /** Resolve a git path such as `MERGE_HEAD`, for in-progress-state detection. */
     gitPath(cwd: string, name: string): Promise<string | undefined>;
 }

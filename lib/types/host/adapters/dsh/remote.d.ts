@@ -34,18 +34,19 @@ import type { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry';
-import type { EvaluateSafetyRequest, GetTurnDetailRequest, ListTurnsRequest } from '../../../shared/contracts/api.ts';
+import type { EvaluateSafetyRequest, GetDiffRequest, GetTurnDetailRequest, ListTurnsRequest } from '../../../shared/contracts/api.ts';
 import type { Diagnostics } from '../../../diagnostics.ts';
 import type { QueryService } from '../../query/service.ts';
 /** The package the descriptors are attributed to, as generated artifacts do. */
 export declare const REMOTE_PACKAGE = "@zhaolianghz/dsh-turnscope";
 /**
- * The three endpoints of `docs/ARCHITECTURE.md §28`, in the order the gateway
- * will see them.
+ * The four endpoints of `docs/ARCHITECTURE.md §28`, in the order the gateway will
+ * see them.
  *
- * `getDiff` is deliberately absent: §28.3 describes it as a method, and it is a
- * method we have not written. Declaring a descriptor for it would make the host
- * claim an endpoint that answers nothing.
+ * A descriptor is a claim that the endpoint answers, so this list is the whole
+ * statement of what this host exposes — an entry without a method behind it would
+ * be an endpoint that 500s, and the smoke harness in
+ * `docs/spikes/client-remote-smoke/` calls one of these against a real gateway.
  */
 export declare const TURNSCOPE_INVOCATIONS: readonly InvocationDescriptor[];
 /** The contribution handed to the registry; the descriptors plus their owner. */
@@ -74,6 +75,7 @@ export declare class TurnscopeRemoteService extends TypertRemoteService {
     listTurns(request: ListTurnsRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeApiEnvelope<import("../../../shared/contracts/api.ts").ListTurnsData>>;
     getTurnDetail(request: GetTurnDetailRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").TurnDetailData>>;
     evaluateSafety(request: EvaluateSafetyRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").EvaluateSafetyData>>;
+    getDiff(request: GetDiffRequest): Promise<import("../../../shared/contracts/api.ts").TurnscopeLookupReply<import("../../../shared/contracts/api.ts").GetDiffData>>;
 }
 /**
  * Mount the Remote face once the Typert registry exists.

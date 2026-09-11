@@ -196,11 +196,24 @@ function fromPostOnly(
   after: Observation,
   now: Observation | undefined,
 ): FileChange | undefined {
-  if (!after.present || after.status === 'clean') return undefined
+  if (after.status === 'clean') return undefined
 
   const created = after.status === 'added' || after.status === 'untracked'
-  const renamed = after.status === 'renamed'
-  const kind: FileChangeKind = created ? 'created' : renamed ? 'renamed' : 'modified'
+  // A row that says the path is *gone* is a change the turn made, not a reason
+  // to say nothing. `deleted` is git reporting that a file it tracks left the
+  // worktree, and a path with no PRE row was clean at PRE — which is the premise
+  // above, that the turn is the only candidate — so nothing else can have
+  // removed it. Reading "not present" as "nothing to report" dropped the case
+  // entirely, which told a user whose agent deleted a file that the turn had
+  // changed nothing; a deletion is also the change a recovery is most often
+  // needed for.
+  const kind: FileChangeKind = created
+    ? 'created'
+    : after.status === 'renamed'
+      ? 'renamed'
+      : after.present
+        ? 'modified'
+        : 'deleted'
   const drift = drifted(after, now)
 
   // A rename git could not pair is `§10.4`'s conflict, and it does not become
@@ -230,8 +243,10 @@ function fromPostOnly(
   return build(ctx, {
     kind,
     attribution: drift ? 'DRIFT' : 'AGENT',
-    // A creation needs no before-content, because "nothing" is its before. A
-    // modification whose before we never observed leaves the delta incomplete.
+    // A creation needs no before-content, because "nothing" is its before. The
+    // other two have a before that no checkpoint fingerprinted — for a deletion
+    // that is git's copy at `PRE`'s HEAD rather than a checkpoint blob — so the
+    // attribution is certain and the delta is not.
     confidence: created ? 'high' : 'medium',
     baseline: false,
     after,
