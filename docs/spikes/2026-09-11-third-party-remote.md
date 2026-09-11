@@ -106,3 +106,55 @@ PASS
 - **Phase F 走 remote 路线，残留风险已关闭**，第二阶段分支不需要启用。
 - 这条证据无法进 CI，但可以重放：`bash docs/spikes/client-remote-smoke/run.sh`。HTTP 服务、探针、断言都在脚本里，改动 RPC 面假设时应重跑。
 - `run.sh` 只在 `$WORK` 内写文件；不新建也不修改 `~/.dsh/profiles/web`（早期探索确实临时建过 `~/.dsh/profiles/ts-smoke`，已删除，脚本改为在 `$WORK` 内完成）。
+
+# 补证二：我们自己的 host 面（同日，Phase F3 收口）
+
+上面证明了「第三方 client 能用 `connection`」。但真正要证的还有一半：**我们注册的 descriptor 在真实 host 里能不能被页面调到**。于是探针加了第二次调用，发的是浏览器 bundle 实际会发的那个信封：
+
+```js
+connection.rpc.call('/api', 'turnscope/listTurns', {
+  args: { request: { apiVersion: <取自 src/shared/contracts/api.ts>, sessionId: 'probe-session', limit: 30 } },
+}, undefined)
+```
+
+`apiVersion` 由 `run.sh` 从源码里抽出后写进探针，所以这个 harness 不会因为版本号被写死在两处而「绿着说谎」；session 用一个从没被记录过的 id，正确答案就是空页。
+
+## 第一次跑：404，是一个真 bug
+
+```
+PROBE: rpc resolved -> {"ok":true,"value":{"ok":false,"error":{"code":"session-not-found",…}}}   ← 第一方面
+PROBE: rpc threw -> transport failure for /api/turnscope/listTurns: HTTP 404                     ← 我们的
+```
+
+同一个 `/api` 通道、同一次 boot、第一方 endpoint 被分发，我们的 endpoint 404——说明**不是传输问题，是我们没挂上去**。原因：`mountTurnscopeRemote` 在 `apply` 时刻同步读 `ctx.typert`，而 registry 是兄弟插件，**在真实 web profile 里比我们晚 provide**。类型上 `ctx.typert` 非可选，运行时那一瞬间就是 `undefined`，于是走了「没有 gateway」的 fail-open 分支。
+
+单测抓不到它：F1/F3 的测试都是自己拼 `new Context()` 后手动 `ctx.plugin(TypertRegistry)`，顺序由测试作者给定，恒为「先 registry 后 mount」。**这是只有真实进程才能证伪的假设**，也正是这个 harness 存在的理由。
+
+修法是把「等 gateway」交给 cordis 自己：
+
+```ts
+const fiber = ctx.inject(['typert'], scoped => {
+  const unmount = mountTurnscopeRemote(scoped, query, diagnostics)
+  scoped.effect(() => unmount, 'turnscope remote face')
+})
+```
+
+`ctx.inject` 的回调在服务出现时运行、被替换时重跑；mount 的 disposer 挂在回调自己的 fiber 上，所以重跑会先撤旧再挂新。没有 registry 的 host 永远不 mount——与原来那个 no-op 同义，因此这里**不记诊断**：没有 gateway 的 profile 没有 API 可丢。（`mountTurnscopeRemote` 自己保留「没有 registry 就 no-op 并记 `trace.remote-unavailable`」的分支：那是这个函数诚实的前置条件，也被单测直接覆盖。）
+
+回归被测住了：`tests/host/adapters/remote.spec.ts > 'waits for the gateway instead of giving up when it arrives late'` 断言「先 mount 不声明任何 endpoint、不记诊断；registry 到达后才声明」。
+
+## 第二次跑：通了，两端形状对上
+
+```
+PROBE: turnscope/listTurns -> {"ok":true,"value":{"apiVersion":1,"data":{"turns":[]}}}
+PASS: a third-party client plugin injected `connection`, completed a /api round trip,
+      and reached the turnscope host face from the page
+```
+
+`{"apiVersion":1,"data":{"turns":[]}}` 正是 `readReply` 期待的形状：`ok:true` 的外层信封 + 带 `apiVersion` 的 `value` + `data` 不是 `null`/`undefined`。也就是说**这条线上 host 的 `envelope`、descriptor 的参数校验、client 的 `readReply` 三者在真实浏览器里对上了**，而且是 page → gateway → typert → `QueryService` → sqlite 的完整往返。
+
+（顺带：条目行现在打出的 `inject` 已经包含 `@deepseek-ai/dsh-client-connection`，与 `package.json` 的 `dsh.client.inject` 一致。）
+
+## 仍然没有证的部分
+
+**真实页面上 `conversation.view` 那个 tab**。我们的 client 插件不是 `immediately: true`——它要等 slot 消费者把它激活，而 slot 消费者要有一场打开的 session。这一条属于 Phase G 的验收，不是本轮；本轮证明的是「接口通」，不是「面板出现了」。

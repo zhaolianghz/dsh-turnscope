@@ -43,6 +43,19 @@ window.__ModuleLoader__.load({
 					undefined,
 				)
 				report('PROBE: rpc resolved -> ' + JSON.stringify(result).slice(0, 300))
+
+				// The second call is the one this harness exists for now: it is our own
+				// host face, reached with the exact envelope our browser bundle sends
+				// (`{ args: { request } }`), against a session that was never recorded —
+				// so an empty page is the right answer, and getting it proves the adapter
+				// is mounted rather than merely listed in the boot graph.
+				const ours = await connection.rpc.call(
+					'/api',
+					'turnscope/listTurns',
+					{ args: { request: { apiVersion: PLACEHOLDER_API_VERSION, sessionId: 'probe-session', limit: 30 } } },
+					undefined,
+				)
+				report('PROBE: turnscope/listTurns -> ' + JSON.stringify(ours).slice(0, 300))
 			} catch (error) {
 				report('PROBE: rpc threw -> ' + String(error && error.message ? error.message : error))
 			}

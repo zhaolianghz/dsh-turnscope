@@ -15,7 +15,10 @@
 #   2. a client plugin with `inject: ['connection']` actually activates, i.e.
 #      the first-party `connection` service is injectable by a third party;
 #   3. `connection.rpc.call('/api', …)` completes a round trip to the real host
-#      service, so the transport is not a host-only story.
+#      service, so the transport is not a host-only story;
+#   4. `turnscope/listTurns` — our own registered descriptor, called with the
+#      envelope our browser bundle sends — answers from the real host, which is
+#      the host half of the client API proved in the same process that calls it.
 #
 # Preconditions: a working `dsh` on PATH and at least one existing profile that
 # already has `@deepseek-ai/dsh-web-app` installed. We reuse that profile's
@@ -104,6 +107,13 @@ cat > "$WORK/patch.yml" <<'YML'
 YML
 sed -i.bak "s|PLACEHOLDER_DATA_DIR|$WORK/turnscope-data|" "$WORK/patch.yml"
 
+# The probe sends the *current* API version, read out of the source rather than
+# written twice: a harness that hard-coded a stale number would pass while the
+# real client bundle was being refused.
+API_VERSION="$(grep -oE 'API_VERSION = [0-9]+' "$REPO/src/shared/contracts/api.ts" | grep -oE '[0-9]+$')"
+[ -n "$API_VERSION" ] || { echo "could not read API_VERSION from $REPO/src/shared/contracts/api.ts" >&2; exit 1; }
+sed -i.bak "s/PLACEHOLDER_API_VERSION/$API_VERSION/" "$PROBE/client.js"
+
 cat > "$WORK/home/profiles/ts-smoke/package.json" <<'JSON'
 {
   "name": "dsh-profile-ts-smoke",
@@ -157,5 +167,7 @@ node "$HERE/drive.mjs" "$CDP_PORT" "http://127.0.0.1:$PORT/" | tee "$WORK/report
 
 echo "== verdict =="
 grep -q 'apply() ran' "$WORK/report.txt" || { echo "FAIL: connection was not injected" >&2; exit 1; }
-grep -q '"ok":true' "$WORK/report.txt" || { echo "FAIL: the gateway did not answer" >&2; exit 1; }
-echo "PASS: a third-party client plugin injected \`connection\` and completed a /api round trip"
+grep -q 'PROBE: rpc resolved -> {"ok":true' "$WORK/report.txt" || { echo "FAIL: the gateway did not answer" >&2; exit 1; }
+grep -q '"turns":\[\]' "$WORK/report.txt" || { echo "FAIL: turnscope/listTurns did not answer with an empty page" >&2; exit 1; }
+echo "PASS: a third-party client plugin injected \`connection\`, completed a /api round trip,"
+echo "      and reached the turnscope host face from the page"
