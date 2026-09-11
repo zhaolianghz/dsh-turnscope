@@ -158,7 +158,7 @@ function classifyPath(
       }
     case 'modified':
     case 'binary_changed':
-      if (snapshot.beforeBlobRef === undefined) {
+      if (snapshot.beforeBlobRef === undefined || snapshot.afterBlobRef === undefined) {
         return { kind: 'noop', path: snapshot.path, reason: 'unknown' }
       }
       return {
@@ -166,6 +166,7 @@ function classifyPath(
         path: snapshot.path,
         expectedCurrentHash: snapshot.currentContentHash ?? '',
         targetBlobRef: snapshot.beforeBlobRef,
+        afterBlobRef: snapshot.afterBlobRef,
       }
     case 'renamed': {
       // A rename's reverse is "delete the new file, recreate the old one" —

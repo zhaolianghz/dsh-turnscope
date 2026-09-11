@@ -44,7 +44,7 @@ describe('recovery types', () => {
 
   it('RecoveryFileOperation is the four-kind discriminated union from spec §4.2', () => {
     const ops: readonly RecoveryFileOperation[] = [
-      { kind: 'restore', path: 'a.ts', expectedCurrentHash: 'sha256:h', targetBlobRef: 'sha256:b' },
+      { kind: 'restore', path: 'a.ts', expectedCurrentHash: 'sha256:h', targetBlobRef: 'sha256:b', afterBlobRef: 'sha256:c' },
       { kind: 'delete_created_file', path: 'b.ts', expectedCurrentHash: 'sha256:h' },
       { kind: 'recreate_deleted_file', path: 'c.ts', targetBlobRef: 'sha256:b' },
       { kind: 'noop', path: 'd.ts', reason: 'baseline_only' },

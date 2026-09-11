@@ -35,7 +35,15 @@ import type { SafetyVerdict } from '../domain/types.ts'
  *   user so they can see why a file they saw in the diff was not rewound.
  */
 export type RecoveryFileOperation =
-  | { kind: 'restore'; path: string; expectedCurrentHash: string; targetBlobRef: string }
+  | {
+      kind: 'restore'
+      path: string
+      expectedCurrentHash: string
+      /** Bytes the turn started from (write these back to the worktree). */
+      targetBlobRef: string
+      /** Bytes the turn left behind — kept so apply can drift-validate without a separate read. */
+      afterBlobRef: string
+    }
   | { kind: 'delete_created_file'; path: string; expectedCurrentHash: string }
   | { kind: 'recreate_deleted_file'; path: string; targetBlobRef: string }
   | { kind: 'noop'; path: string; reason: 'baseline_only' | 'drift_preserved' | 'unchanged' | 'unknown' }

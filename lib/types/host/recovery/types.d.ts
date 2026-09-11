@@ -36,7 +36,10 @@ export type RecoveryFileOperation = {
     kind: 'restore';
     path: string;
     expectedCurrentHash: string;
+    /** Bytes the turn started from (write these back to the worktree). */
     targetBlobRef: string;
+    /** Bytes the turn left behind — kept so apply can drift-validate without a separate read. */
+    afterBlobRef: string;
 } | {
     kind: 'delete_created_file';
     path: string;

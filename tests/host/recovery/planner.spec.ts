@@ -93,7 +93,13 @@ describe('planRecovery', () => {
       }),
     )
     expect(p.operations).toEqual([
-      { kind: 'restore', path: 'a.txt', expectedCurrentHash: 'cur', targetBlobRef: 'blobs/a-pre' },
+      {
+        kind: 'restore',
+        path: 'a.txt',
+        expectedCurrentHash: 'cur',
+        targetBlobRef: 'blobs/a-pre',
+        afterBlobRef: 'blobs/a-post',
+      },
     ])
     expect(p.stateHash).toMatch(/^sha256:/)
   })

@@ -81,7 +81,7 @@ describe('TraceRepository — V0.2 recovery CRUD', () => {
 
   it('round-trips a plan with a populated operations array', async () => {
     const ops: readonly RecoveryFileOperation[] = [
-      { kind: 'restore', path: 'src/a.ts', expectedCurrentHash: 'sha256:' + 'h'.repeat(64), targetBlobRef: 'sha256:' + 'b'.repeat(64) },
+      { kind: 'restore', path: 'src/a.ts', expectedCurrentHash: 'sha256:' + 'h'.repeat(64), targetBlobRef: 'sha256:' + 'b'.repeat(64), afterBlobRef: 'sha256:' + 'c'.repeat(64) },
       { kind: 'delete_created_file', path: 'tmp/junk.txt', expectedCurrentHash: 'sha256:' + 'j'.repeat(64) },
       { kind: 'recreate_deleted_file', path: 'old.txt', targetBlobRef: 'sha256:' + 'o'.repeat(64) },
       { kind: 'noop', path: 'README.md', reason: 'baseline_only' },
@@ -134,6 +134,7 @@ describe('TraceRepository — V0.2 recovery CRUD', () => {
       path: 'src/a.ts',
       expectedCurrentHash: 'sha256:' + 'h'.repeat(64),
       targetBlobRef: 'sha256:' + 'b'.repeat(64),
+      afterBlobRef: 'sha256:' + 'c'.repeat(64),
     }))
     await repo.putRecoveryJournalEntry(journalEntry(plan, 1, 'verified'))
     await repo.putRecoveryJournalEntry(journalEntry(plan, 2, 'applied'))
