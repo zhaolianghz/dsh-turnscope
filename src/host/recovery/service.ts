@@ -33,6 +33,9 @@ import type { TurnscopeApiEnvelope } from '../../shared/contracts/api.ts'
 import type { CheckpointPathState, SafetyVerdict, TurnRecord, WorkspaceRecord } from '../domain/types.ts'
 import { planRecovery, type PlannerPathSnapshot } from './planner.ts'
 import { rollbackUnfinished } from './runner/rollback.ts'
+import { OBJECT_KINDS } from '../storage/object-store.ts'
+import type { GitPort } from '../git/git-port.ts'
+import { captureCheckpoint } from '../git/checkpoint.ts'
 import { resolveRecoveryRoot, resolveDryRunRoot } from './runner/paths.ts'
 import { runDryRun } from './runner/dryrun.ts'
 import { runApply, type ApplyClock, type ApplyLiveContext } from './runner/apply.ts'
@@ -59,6 +62,10 @@ export type RecoverySink = Pick<
   | 'updateRecoveryPlanStatus'
   | 'listRecoveryPlans'
   | 'listUnfinishedRecoveryPlans'
+  | 'putObjectRecord'
+  | 'putRecoveryJournalEntry'
+  | 'putCheckpoint'
+  | 'putCheckpointPath'
 >
 
 /**
@@ -92,6 +99,13 @@ export interface RecoveryDeps {
   readonly clock: RecoveryClock
   /** Where the journal and dryrun staging directories live. */
   readonly homeDir: string
+  /**
+   * Read-only access to git. The rewind reads the bytes of every relevant path
+   * as it stood in `HEAD` so the planner can put a real `beforeBlobRef` on
+   * each op; without it, drift detection has nothing to compare the live
+   * worktree against, and a rewind would happily overwrite the user's work.
+   */
+  readonly git: GitPort
 }
 
 /**
@@ -118,7 +132,7 @@ export interface RecoveryService {
  * `applyRewind` is persist the terminal status.
  */
 export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
-  const { sink, store, worktree, clock, homeDir } = deps
+  const { sink, store, worktree, clock, homeDir, git } = deps
 
   /**
    * Pull a turn, its workspace, its file changes, and the before-checkpoint
@@ -153,6 +167,7 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
     paths: readonly string[],
     workspace: WorkspaceRecord,
     checkpointPathsByPath: ReadonlyMap<string, CheckpointPathState>,
+    headRef: string,
   ): Promise<readonly PlannerPathSnapshot[]> => {
     return Promise.all(
       paths.map(async path => {
@@ -161,11 +176,31 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
           ? await worktree.hashCurrent(workspace.repoRoot, path)
           : undefined
         const cp = checkpointPathsByPath.get(path)
+        // The `before` side of a diff is the bytes the file had at HEAD before
+        // the turn opened. Captured from git so the rewind has something to put
+        // back, then stored through the object store so the planner's
+        // `beforeBlobRef` is a ref the runner can actually resolve.
+        const headBytes = await git.blobAt(workspace.repoRoot, headRef, path)
+        let beforeBlobRef: string | undefined
+        if (headBytes !== undefined) {
+          const stored = await store.put(OBJECT_KINDS.RECOVERY_BLOB, headBytes, {
+            redaction: 'raw-bytes',
+          })
+          await sink.putObjectRecord?.({
+            schemaVersion: 3,
+            ref: stored.ref,
+            kind: OBJECT_KINDS.RECOVERY_BLOB,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            createdAt: clock.nowMs(),
+          })
+          beforeBlobRef = stored.ref
+        }
         return {
           path,
           staged: false,
           currentContentHash,
-          beforeBlobRef: cp?.blobRef,
+          beforeBlobRef,
           afterBlobRef: cp?.blobRef,
           existedBefore: existsNow,
           existsNow,
@@ -203,10 +238,12 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         return envelope<PreviewRewindData>(data)
       }
       const verdict: SafetyVerdict = verdictOrError
+      const head = await git.head(workspace.repoRoot)
+      const headRef = head?.oid ?? 'HEAD'
       const pathSet = new Set(fileChanges.map(c => c.path))
       for (const cp of checkpointPaths) pathSet.add(cp.path)
       const checkpointPathsByPath = new Map(checkpointPaths.map(cp => [cp.path, cp]))
-      const paths = await snapshotPaths([...pathSet], workspace, checkpointPathsByPath)
+      const paths = await snapshotPaths([...pathSet], workspace, checkpointPathsByPath, headRef)
 
       const plan = planRecovery({
         turnId: turn.id,
@@ -214,8 +251,8 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         verdict,
         workspaceId: workspace.id,
         git: {
-          headOid: 'pending',
-          branch: 'pending',
+          headOid: head?.oid ?? 'pending',
+          branch: head?.branch ?? 'detached',
           worktreePath: workspace.repoRoot,
         },
         paths,
@@ -284,6 +321,30 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         live: liveFor(workspace.repoRoot),
         clock,
       })
+
+      // Persist the journal the runner produced. Without these rows, a crash
+      // surfacing in §9.1 (boot-time `rollbackUnfinished`) has nothing to
+      // walk, and the journal's whole reason for being — "honest about what
+      // happened" — is unfulfilled.
+      for (const entry of result.journal) {
+        await sink.putRecoveryJournalEntry(entry)
+      }
+
+      // `recovery_after` is the post-rewind snapshot. Capturing it makes the
+      // rewind itself undoable (a future "rewind the rewind" sees the workspace
+      // as it stood after this one finished), and gives a future drift check
+      // something to compare the live file against other than `HEAD`.
+      if (result.status === 'completed') {
+        await captureCheckpoint(
+          { git, store, sink, maxBlobBytes: 1024 * 1024, ignorePaths: [] },
+          {
+            workspaceId: workspace.id,
+            repoRoot: workspace.repoRoot,
+            turnId: plan.turnId,
+            phase: 'recovery_after',
+          },
+        )
+      }
 
       const finalStatus: RecoveryPlanStatus = result.status
       await sink.updateRecoveryPlanStatus(plan.id, finalStatus)

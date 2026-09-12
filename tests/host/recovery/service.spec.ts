@@ -118,6 +118,10 @@ const makeSink = (overrides: { plans?: Map<string, RecoveryPlan>; changes?: File
     },
     listRecoveryPlans: async () => Array.from(plans.values()),
     listUnfinishedRecoveryPlans: async () => Array.from(plans.values()).filter(p => p.status !== 'completed' && p.status !== 'failed' && p.status !== 'rolled_back' && p.status !== 'cancelled'),
+    putCheckpoint: async () => undefined,
+    putCheckpointPath: async () => undefined,
+    putObjectRecord: async () => undefined,
+    putRecoveryJournalEntry: async () => undefined,
   }
   return sink as unknown as TraceRepository
 }
@@ -141,11 +145,23 @@ const buildHarness = (opts: {
 }): Harness => {
   const baselineBytes = opts.baselineBytes ?? Buffer.from('export const x = 1\n', 'utf8')
   const fakeStore = {
-    put: async () => 'unused',
+    put: async () => ({ ref: 'before-ref', byteSize: baselineBytes.byteLength, sha256: sha(baselineBytes) }),
     get: async (ref: string) => ref === 'before-ref' ? baselineBytes : null,
     stat: async (ref: string) => ref === 'before-ref' ? { kind: 'recovery-blob' as const, ref, bytes: baselineBytes.byteLength, sha256: sha(baselineBytes) } : undefined,
     has: async () => false,
     listRefs: async () => [],
+  } as never
+  const fakeGit = {
+    isRepository: async (_cwd: string) => false,
+    toplevel: async (_cwd: string) => undefined,
+    commonDir: async (_cwd: string) => undefined,
+    canonicalRemote: async (_cwd: string) => undefined,
+    head: async (_cwd: string) => ({ oid: 'fake-head' }),
+    status: async (_cwd: string) => [],
+    hashObject: async (_cwd: string, _path: string) => undefined,
+    blob: async (_cwd: string, _oid: string) => undefined,
+    blobAt: async (_cwd: string, _treeish: string, _path: string) => baselineBytes,
+    gitPath: async (_cwd: string, _name: string) => undefined,
   } as never
   const service = createRecoveryService({
     sink: makeSink({
@@ -159,6 +175,7 @@ const buildHarness = (opts: {
     store: fakeStore,
     clock: opts.clock,
     homeDir: opts.homeDir,
+    git: fakeGit,
   } satisfies RecoveryDeps)
   return { service, files: opts.files, clock: opts.clock }
 }

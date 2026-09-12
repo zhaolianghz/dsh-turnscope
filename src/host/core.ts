@@ -444,6 +444,7 @@ export async function startTraceCore(
         worktree: createNodeWorktreeReader(),
         clock: recoveryClock,
         homeDir: root,
+        git,
       })
       const unmountRemote = mountTurnscopeRemoteWhenReady(ctx, query, recovery, diagnostics)
       return {

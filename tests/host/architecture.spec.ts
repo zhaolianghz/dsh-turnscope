@@ -151,7 +151,7 @@ describe('source invariants', () => {
     // byte-identical, so a secret in them stays a secret on disk. Exactly one
     // module is allowed to need that — the workspace observer, capturing a file
     // so a recovery can put it back. Anywhere else it is a leak.
-    const allowed = ['host/storage/', 'host/git/']
+    const allowed = ['host/storage/', 'host/git/', 'host/recovery/']
     expect(
       matching(files, /raw-bytes/).filter(
         path => !allowed.some(prefix => path.startsWith(prefix)),
