@@ -14,8 +14,11 @@ const ANTHROPIC_KEY = 'sk-ant-api03-Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0F'
 const BEARER_TOKEN = 'Zm9vYmFyMTIzNDU2Nzg5MGFiY2RlZg'
 const AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'
 const GITHUB_TOKEN = 'ghp_1234567890abcdefghijklmnopqrstuvwxyz'
-const SLACK_TOKEN = 'xoxb-REDACTED-FIXTURE-0000000001-FAKEFAKEFAKE'
-const SLACK_ALT = 'xoxp-REDACTED-FIXTURE-0000000001-FAKEFAKEFAKE'
+// Synthetic-looking Slack-shaped fixtures: a `TEST` namespace token is used
+// so the pattern matchers in `redact.ts` still trigger while the strings stay
+// distinguishable from real Slack tokens on secret-scanning review.
+const SLACK_TOKEN = 'xoxb-TEST-FAKE0001-FAKE0000000001-FAKEFAKEFAKE'
+const SLACK_ALT = 'xoxp-TEST-FAKE0001-FAKE0000000001-FAKEFAKEFAKE'
 const JWT =
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk'
 const PEM_BODY = 'MIIEowIBAAKCAQEAxYzAbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
