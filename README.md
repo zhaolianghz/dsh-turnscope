@@ -2,7 +2,7 @@
 
 **Understand every agent turn. Rewind safely. Retry without losing good work.**
 
-`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. Its first development slice adds a native, read-only turn timeline to DSH coding sessions. File diffs, safe rewind, and forked retries remain planned.
+`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The V0.1 slice adds a native, read-only turn timeline to DSH coding sessions with per-file diffs and deterministic warnings. The V0.2 slice adds preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned.
 
 > Status: unreleased development build for DSH `0.1.1-rc.2`. It is not published to npm.
 
