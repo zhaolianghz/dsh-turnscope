@@ -2,9 +2,26 @@
 
 **Understand every agent turn. Rewind safely. Retry without losing good work.**
 
-`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The V0.1 slice adds a native, read-only turn timeline to DSH coding sessions with per-file diffs and deterministic warnings. The V0.2 slice adds preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned.
+`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3.
 
-> Status: unreleased development build for DSH `0.1.1-rc.2`. It is not published to npm.
+> Status: **V0.1 published** (`@zhaolianghz/dsh-turnscope@0.1.0`) for DSH `0.1.1-rc.2`. V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `3`. Forked retries remain planned for V0.3.
+
+## Changelog
+
+### 0.1.0 — 2026-09-11
+
+First published release. Ships V0.1 (turn timeline + diffs + warnings) and V0.2 (preview-first safe rewind) in one bundle — the rewind feature needs the same `recovery_before` / `recovery_after` checkpoint phase that V0.1 already allocates, and the only safe moment to publish a real rewind is when the worktree-state drift guard is verified end-to-end against a real Git repository.
+
+Highlights:
+
+- Native `conversation.view` integration; turn timeline with running / completed / failed / output-limit states
+- Per-turn duration, tool count, error count, activity list, command outcomes, file summaries, file diffs
+- Deterministic safety warnings for common failure patterns
+- **Preview / Apply safe rewind**: preview drafts a plan with zero worktree writes; apply commits it with atomic rename + per-file journal, and any mid-apply crash rolls files back to their pre-apply bytes on the next boot
+- Drift guard: apply refuses if the live worktree has changed since the preview was drafted (real `git.blobAt(HEAD)` bytes compared against the live file, not just a hash)
+- `recovery_before` and `recovery_after` checkpoint phases captured around the apply; a future rewind-the-rewind can compare against either
+- Local-only storage (managed root, mode `0o600`), no telemetry, no `git reset --hard`, no branch rewrite
+- English + Simplified Chinese copy
 
 ## Why
 
