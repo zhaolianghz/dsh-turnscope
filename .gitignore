@@ -4,6 +4,7 @@ node_modules/
 .cursor/rules/codegraph.mdc
 .worktrees/
 dist/
+lib/
 coverage/
 *.log
 .env

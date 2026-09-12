@@ -72,11 +72,22 @@ cd /path/to/deepseek-harness
 pnpm dsh plugin --profile web add /path/to/dsh-turnscope
 ```
 
-Start DSH Web with the provided overlay:
+Start DSH Web. `pnpm dsh plugin add` already inserts the plugin into the
+`web` profile's bundle layer; do **not** also pass the bundled
+`examples/cordis.patch.yml` to `--patch`, or the loader will see a
+duplicate `turnscope` id and refuse to boot. The patch overlay is
+only needed when linking turnscope into a profile that does not have
+the bundle layer (rare; documented for completeness):
 
 ```sh
-pnpm dsh --profile web --patch /path/to/dsh-turnscope/examples/cordis.patch.yml
+pnpm dsh --profile web
 ```
+
+Verified on `0.1.1-rc.2`: the home page serves with turnscope in the
+boot manifest (`/plugins/@zhaolianghz/dsh-turnscope/client.js`), and
+the client bundle exports `previewRewind`, `listTurns`,
+`RecoverySection`, and the other DTOs.
+
 
 Open a session and select the **Turns / 轮次** conversation tab. Because this package is not published yet, there is intentionally no npm installation command.
 
@@ -92,7 +103,7 @@ The first release targets Git-backed coding projects in DSH Web. Non-Git workspa
 
 ## 中文简介
 
-`dsh-turnscope` 是一个面向 DSH 编程用户的开发者工具插件。当前开发版已按照 DSH `0.1.1-rc.2` 原生插件机制实现只读轮次时间线；文件差异、安全回退和隔离重试仍在后续计划中。
+`dsh-turnscope` 是一个面向 DSH 编程用户的开发者工具插件。V0.1 在 DSH `0.1.1-rc.2` 上提供只读轮次时间线和文件差异；V0.2 增加 preview-first 安全回退（`轮次` 面板中的 Preview / Apply 按钮）；分叉重试仍在后续计划中。
 
 首版坚持本地优先、默认无遥测，并且绝不通过重置分支或覆盖 Git 历史来实现回退。
 
