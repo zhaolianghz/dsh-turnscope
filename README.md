@@ -8,6 +8,10 @@
 
 ## Changelog
 
+### 0.1.3 — 2026-09-15
+
+DSH records a session's startup burst — the instructions, catalog, and recall the harness injects before the first user prompt — as `context` conversation nodes. The renderer now drops those pre-prompt context events from the turn activity list, so a fresh session's turn 1 and turn 2 cards no longer show `Context/Context/Context` rows. Mid-session context injections (seq ≥ first user/assistant seq) are unaffected; a session that has not yet received any user message keeps the entries, since there is no signal to distinguish bootstrap from "the user is composing their first prompt". Renderer-only fix; no `API_VERSION` bump. 598 tests (595 → 598, +3), typecheck clean, client bundle 78.21 kB (+0.32).
+
 ### 0.1.2 — 2026-09-15
 
 The detail page's change list now groups inherited baseline-dirty paths under a labelled `本轮开始时已脏 (N)` divider, so a reader opening the detail to see what the agent did this turn no longer has to scroll past the inherited worktree state. The per-row `本轮开始时已脏` badge is unchanged. Renderer-only fix; no `API_VERSION` bump, no DB migration, no worktree write. 595 tests (593 → 595, +2), typecheck clean.
