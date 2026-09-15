@@ -2,11 +2,15 @@
 
 **Understand every agent turn. Rewind safely. Retry without losing good work.**
 
-`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3.
+`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 patch fixes the baseline-dirty display (see Changelog below).
 
 > Status: **V0.1 published** (`@zhaolianghz/dsh-turnscope@0.1.0`) for DSH `0.1.1-rc.2`. V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `3`. Forked retries remain planned for V0.3.
 
 ## Changelog
+
+### 0.1.1 — 2026-09-15
+
+Baseline-dirty clarity. The per-turn "Changed files" count was summing the agent's edits with paths the worktree was already dirty with at session start, so any session whose worktree wasn't clean on open reported the same misleading 76-file headline on every turn. The fix splits the wire-shape into `agentChangeCount` + `baselineChangeCount` (additive, `API_VERSION 4`), the turn card shows the agent count with a muted `+N 本轮开始时已脏` chip when the baseline number is non-zero, and the detail header does the same. The per-file `本轮开始时已脏` badge is unchanged. 593 tests, typecheck clean, client bundle 77.09 kB.
 
 ### 0.1.0 — 2026-09-11
 
@@ -120,7 +124,7 @@ The first release targets Git-backed coding projects in DSH Web. Non-Git workspa
 
 ## 中文简介
 
-`dsh-turnscope` 是一个面向 DSH 编程用户的开发者工具插件。V0.1 在 DSH `0.1.1-rc.2` 上提供只读轮次时间线和文件差异；V0.2 增加 preview-first 安全回退（`轮次` 面板中的 Preview / Apply 按钮）；分叉重试仍在后续计划中。
+`dsh-turnscope` 是一个面向 DSH 编程用户的开发者工具插件。V0.1 在 DSH `0.1.1-rc.2` 上提供只读轮次时间线和文件差异；V0.2 增加 preview-first 安全回退（`轮次` 面板中的 Preview / Apply 按钮）；分叉重试仍在后续计划中。0.1.1 补丁修复了会话启动时工作区已脏导致的"变更文件"误报（详见下方 Changelog）。
 
 首版坚持本地优先、默认无遥测，并且绝不通过重置分支或覆盖 Git 历史来实现回退。
 

@@ -113,10 +113,9 @@ export interface TraceRepository {
   /**
    * Agent vs. baseline-dirty split for a batch of turns, in one statement.
    *
-   * `kind = 'noop'` rows are bookkeeping, not changes, so they are excluded
-   * from both counts. `baseline = 1` means the path was already dirty when the
-   * turn started; that is inherited state, not work the agent did, so a UI
-   * that wants to know what the agent changed reads `agent` here.
+   * `baseline = 1` means the path was already dirty when the turn started;
+   * that is inherited state, not work the agent did, so a UI that wants to
+   * know what the agent changed reads `agent` here.
    */
   countFileChangesByAttribution(
     turnIds: readonly string[],
@@ -890,8 +889,8 @@ export function createRepository(handle: IndexHandle): TraceRepository {
     if (turnIds.length === 0) return new Map()
     const rows = await all(
       `SELECT turn_id,
-              SUM(CASE WHEN kind = 'noop' OR baseline = 1 THEN 0 ELSE 1 END) AS agent_n,
-              SUM(CASE WHEN kind = 'noop' OR baseline = 0 THEN 0 ELSE 1 END) AS baseline_n
+              SUM(CASE WHEN baseline = 1 THEN 0 ELSE 1 END) AS agent_n,
+              SUM(CASE WHEN baseline = 0 THEN 0 ELSE 1 END) AS baseline_n
          FROM file_changes
         WHERE turn_id IN (${turnIds.map(() => '?').join(', ')})
         GROUP BY turn_id`,

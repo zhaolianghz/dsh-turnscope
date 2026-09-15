@@ -110,7 +110,6 @@ export function createQueryService(deps: QueryDeps): QueryService {
     let agent = 0
     let baseline = 0
     for (const change of changes) {
-      if (change.kind === 'noop') continue
       if (change.baseline) baseline += 1
       else agent += 1
     }

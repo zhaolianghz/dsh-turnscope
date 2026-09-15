@@ -404,7 +404,12 @@ describe('the Remote face', () => {
     expect(host.refreshed).toEqual([TURN])
     expect(result.value).toEqual({
       apiVersion: API_VERSION,
-      data: { verdict: expect.objectContaining({ level: 'SAFE' }), changeCount: 0 },
+      data: {
+        verdict: expect.objectContaining({ level: 'SAFE' }),
+        changeCount: 0,
+        agentChangeCount: 0,
+        baselineChangeCount: 0,
+      },
     })
   })
 
