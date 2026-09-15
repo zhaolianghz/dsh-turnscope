@@ -54,4 +54,57 @@ describe('deriveTurnModels', () => {
     const [turn] = deriveTurnModels(snapshotWith([future], new Map([[1, { startTime: 100, endTime: 110 }]])))
     expect(turn?.activities[0]).toMatchObject({ kind: 'unknown', label: 'Unknown: future-event' })
   })
+
+  it('drops context nodes whose seq is before the first user/assistant node', () => {
+    // A session's bootstrap burst — instructions, catalog, recall — lands as
+    // `context` nodes with seqs earlier than the first user prompt. Those are
+    // session-startup noise, not turn activity, and must not appear in turn 1.
+    const result = deriveTurnModels(snapshotWith([
+      node({ kind: 'context', seq: 1, time: 100 }),
+      node({ kind: 'context', seq: 2, time: 101 }),
+      node({
+        kind: 'user', seq: 5, time: 110, blocks: [],
+        source: { kind: 'user-message' },
+      }),
+    ], new Map([[1, { startTime: 100, endTime: 120 }]]), new Map([[1, 10]])))
+
+    expect(result).toHaveLength(1)
+    const turn = result[0]!
+    expect(turn.activities.map(activity => activity.kind)).toEqual(['user'])
+    expect(turn.activities.find(activity => activity.kind === 'system')).toBeUndefined()
+  })
+
+  it('keeps context nodes that arrive after the first user/assistant node', () => {
+    // A `context` node with seq >= the first user/assistant seq is a real
+    // in-turn or between-turn event and must stay.
+    const result = deriveTurnModels(snapshotWith([
+      node({
+        kind: 'user', seq: 5, time: 110, blocks: [],
+        source: { kind: 'user-message' },
+      }),
+      node({ kind: 'context', seq: 6, time: 111 }),
+      node({
+        kind: 'assistant', seq: 7, turn: 1, step: 1, time: 120, blocks: [],
+      }),
+    ], new Map([[1, { startTime: 100, endTime: 130 }]]), new Map([[1, 10]])))
+
+    expect(result).toHaveLength(1)
+    const turn = result[0]!
+    expect(turn.activities.map(activity => activity.kind)).toEqual(['user', 'system', 'assistant'])
+  })
+
+  it('keeps all context nodes when no user or assistant message exists yet', () => {
+    // Without a user/assistant seq to anchor the cutoff, the filter cannot
+    // distinguish bootstrap from "the user is composing their first prompt",
+    // so it must keep the entries.
+    const result = deriveTurnModels(snapshotWith([
+      node({ kind: 'context', seq: 1, time: 100 }),
+      node({ kind: 'context', seq: 2, time: 101 }),
+    ], new Map([[1, { startTime: 100, endTime: 120 }]]), new Map([[1, 10]])))
+
+    expect(result).toHaveLength(1)
+    const turn = result[0]!
+    expect(turn.activities).toHaveLength(2)
+    expect(turn.activities.every(activity => activity.kind === 'system')).toBe(true)
+  })
 })

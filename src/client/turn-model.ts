@@ -55,9 +55,26 @@ export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnM
     .find(turn => !snapshot.turnEnds.has(turn))
   const turnForSeq = (seq: number): number | undefined =>
     endSeqs.find(([, endSeq]) => seq <= endSeq)?.[0] ?? openTurn
+  // A session's bootstrap burst — the instructions, catalog, and recall the
+  // harness injects before the first user prompt — lands in the conversation
+  // as `context` nodes with seqs earlier than the first `user` / `assistant`
+  // seq. Those nodes are not turn activity, so we drop them here. When the
+  // snapshot has no user/assistant yet (fresh session, no message sent), we
+  // keep the entries: there is no signal to distinguish bootstrap from
+  // "the user is composing their first prompt" and dropping them would be
+  // worse than showing them.
+  const firstRealSeq = snapshot.nodes.reduce<number | undefined>((min, n) => {
+    if (n.kind !== 'user' && n.kind !== 'assistant') return min
+    return min === undefined ? n.seq : Math.min(min, n.seq)
+  }, undefined)
 
   const groups = new Map<number, ConversationNode[]>()
   for (const conversationNode of snapshot.nodes) {
+    if (conversationNode.kind === 'context'
+        && firstRealSeq !== undefined
+        && conversationNode.seq < firstRealSeq) {
+      continue
+    }
     const explicit = 'turn' in conversationNode && typeof conversationNode.turn === 'number'
       ? conversationNode.turn
       : undefined
