@@ -153,4 +153,68 @@ describe('TurnDetailView', () => {
     const view = show({ kind: 'value', value: detail() })
     expect(view.getByText('本版本不写入工作区，恢复动作由后续版本提供。')).toBeTruthy()
   })
+
+  it('groups baseline-dirty paths under a divider when the turn inherited dirty state', () => {
+    // The change list splits into two visible groups when a turn inherited
+    // dirty worktree state, so a reader can find what the agent did this turn
+    // without scrolling past inherited paths. The per-row `本轮开始时已脏`
+    // badge stays — the divider is the bulk signal.
+    const view = show({
+      kind: 'value',
+      value: detail({
+        summary: {
+          ...detail().summary,
+          changeCount: 8,
+          agentChangeCount: 3,
+          baselineChangeCount: 5,
+        },
+        changes: [
+          change('src/agent-1.ts'),
+          change('src/agent-2.ts'),
+          change('src/agent-3.ts'),
+          change('work/bl-1.ts', { baseline: true }),
+          change('work/bl-2.ts', { baseline: true }),
+          change('work/bl-3.ts', { baseline: true }),
+          change('work/bl-4.ts', { baseline: true }),
+          change('work/bl-5.ts', { baseline: true }),
+        ],
+      }),
+    })
+
+    // Two `<ul>` elements: agent edits first, then the baseline group beneath
+    // the divider. Each `<ul>` has only its own rows.
+    const lists = [...view.container.querySelectorAll('.turnscope-changes')]
+    expect(lists).toHaveLength(2)
+    const agentRows = [...lists[0]!.querySelectorAll('.turnscope-change')]
+    const baselineRows = [...lists[1]!.querySelectorAll('.turnscope-change')]
+    expect(agentRows).toHaveLength(3)
+    expect(baselineRows).toHaveLength(5)
+    expect(agentRows.map(r => r.textContent).join('|')).toContain('src/agent-1.ts')
+    expect(baselineRows.map(r => r.textContent).join('|')).toContain('work/bl-1.ts')
+
+    // The divider names the group and its count.
+    const divider = view.container.querySelector('.turnscope-baseline-heading')
+    expect(divider?.textContent).toContain('本轮开始时已脏')
+    expect(divider?.textContent).toContain('5')
+  })
+
+  it('renders a single change list when no paths were inherited', () => {
+    const view = show({
+      kind: 'value',
+      value: detail({
+        changes: [
+          change('src/agent-1.ts'),
+          change('src/agent-2.ts'),
+          change('src/agent-3.ts'),
+        ],
+      }),
+    })
+
+    const lists = [...view.container.querySelectorAll('.turnscope-changes')]
+    expect(lists).toHaveLength(1)
+    const rows = [...lists[0]!.querySelectorAll('.turnscope-change')]
+    expect(rows).toHaveLength(3)
+    // No divider when the baseline group is empty.
+    expect(view.container.querySelector('.turnscope-baseline-heading')).toBeNull()
+  })
 })
