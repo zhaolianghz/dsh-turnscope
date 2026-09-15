@@ -122,10 +122,20 @@ function Loaded({
       <section className="turnscope-section" aria-label={t('detail.changes')}>
         <h4>
           {t('detail.changes')}{' '}
-          {/* The count of the rows below, not the summary's `changeCount`: the two
-              are the same number when the answer is consistent, and when they are
-              not, the one a reader can check by counting is the better one. */}
-          <span className="turnscope-count">{detail.changes.length}</span>
+          {/* The agent's edits. Baseline-dirty paths, if any, are shown in
+              their own line below, since they are inherited state rather than
+              a row the agent added or modified this turn. */}
+          <span className="turnscope-count">{summary.agentChangeCount}</span>
+          {summary.baselineChangeCount > 0 ? (
+            <>
+              {' '}
+              <span className="turnscope-baseline">
+                {t('summary.baselineChangesShort', {
+                  count: summary.baselineChangeCount,
+                })}
+              </span>
+            </>
+          ) : null}
         </h4>
         {detail.changes.length === 0 ? (
           <p className="turnscope-detail-note">{t('detail.noChanges')}</p>

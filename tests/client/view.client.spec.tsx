@@ -111,6 +111,8 @@ describe('TurnscopeView', () => {
       {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
       recorded={recordedOf([row(1, {
         changeCount: 3,
+        agentChangeCount: 3,
+        baselineChangeCount: 0,
         evidenceCompleteness: 'partial',
         safety: verdict('CAUTION', 'PREVIEW_REWIND'),
       })])}

@@ -145,9 +145,25 @@ export function TurnscopeView({
               {/* Changed files come from the host, so they are absent until it
                   answers. Nothing is shown in their place: a count invented from
                   the timeline would be a different number about a different set
-                  of paths (the timeline knows tool calls, not file changes). */}
+                  of paths (the timeline knows tool calls, not file changes).
+                  The headline is the agent's edits; a muted chip follows when
+                  the turn also inherited a dirty worktree, so the reader can
+                  tell the two apart without losing either. */}
               {summary === undefined ? null : (
-                <div><dt>{t('summary.changes')}</dt><dd>{summary.changeCount}</dd></div>
+                <div>
+                  <dt>{t('summary.changes')}</dt>
+                  <dd>
+                    {summary.agentChangeCount}
+                    {summary.baselineChangeCount > 0 ? (
+                      <span className="turnscope-baseline">
+                        {' '}
+                        {t('summary.baselineChangesShort', {
+                          count: summary.baselineChangeCount,
+                        })}
+                      </span>
+                    ) : null}
+                  </dd>
+                </div>
               )}
               <div><dt>{t('summary.tools')}</dt><dd>{turn.toolCount}</dd></div>
               <div><dt>{t('summary.errors')}</dt><dd>{turn.errorCount}</dd></div>
