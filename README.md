@@ -8,6 +8,10 @@
 
 ## Changelog
 
+### 0.1.2 — 2026-09-15
+
+The detail page's change list now groups inherited baseline-dirty paths under a labelled `本轮开始时已脏 (N)` divider, so a reader opening the detail to see what the agent did this turn no longer has to scroll past the inherited worktree state. The per-row `本轮开始时已脏` badge is unchanged. Renderer-only fix; no `API_VERSION` bump, no DB migration, no worktree write. 595 tests (593 → 595, +2), typecheck clean.
+
 ### 0.1.1 — 2026-09-15
 
 Baseline-dirty clarity. The per-turn "Changed files" count was summing the agent's edits with paths the worktree was already dirty with at session start, so any session whose worktree wasn't clean on open reported the same misleading 76-file headline on every turn. The fix splits the wire-shape into `agentChangeCount` + `baselineChangeCount` (additive, `API_VERSION 4`), the turn card shows the agent count with a muted `+N 本轮开始时已脏` chip when the baseline number is non-zero, and the detail header does the same. The per-file `本轮开始时已脏` badge is unchanged. 593 tests, typecheck clean, client bundle 77.09 kB.
