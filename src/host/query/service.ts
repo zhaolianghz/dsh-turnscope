@@ -48,6 +48,7 @@ export type QuerySink = Pick<
   | 'getWorkspace'
   | 'listFileChanges'
   | 'countFileChanges'
+  | 'countFileChangesByAttribution'
   | 'listCommands'
   | 'listTests'
   | 'getLatestVerdict'
@@ -103,9 +104,22 @@ const clampLimit = (requested: number): number => {
 export function createQueryService(deps: QueryDeps): QueryService {
   const { sink, inspector, diffs } = deps
 
+  const summarizeCounts = (
+    changes: readonly { readonly kind: string; readonly baseline: boolean }[],
+  ): { readonly agent: number; readonly baseline: number } => {
+    let agent = 0
+    let baseline = 0
+    for (const change of changes) {
+      if (change.kind === 'noop') continue
+      if (change.baseline) baseline += 1
+      else agent += 1
+    }
+    return { agent, baseline }
+  }
+
   const summarize = (
     turn: TurnRecord,
-    changeCount: number,
+    counts: { readonly agent: number; readonly baseline: number },
     safety: SafetySummaryDto | undefined,
   ): TurnSummaryDto => ({
     turnId: turn.id,
@@ -117,9 +131,13 @@ export function createQueryService(deps: QueryDeps): QueryService {
     activityCount: turn.activityCount,
     errorCount: turn.errorCount,
     evidenceCompleteness: turn.evidenceCompleteness,
-    changeCount,
+    changeCount: counts.agent + counts.baseline,
+    agentChangeCount: counts.agent,
+    baselineChangeCount: counts.baseline,
     ...(safety === undefined ? {} : { safety }),
   })
+
+  const zeroCounts = { agent: 0, baseline: 0 }
 
   return {
     listTurns: async request => {
@@ -133,13 +151,13 @@ export function createQueryService(deps: QueryDeps): QueryService {
       // turn runs, so a per-row lookup here would put 2N statements on the path
       // a user watches (`docs/ARCHITECTURE.md §44.3`).
       const [counts, verdicts] = await Promise.all([
-        sink.countFileChanges(turnIds),
+        sink.countFileChangesByAttribution(turnIds),
         sink.latestVerdicts(turnIds),
       ])
 
       return envelope<ListTurnsData>({
         turns: page.turns.map(turn =>
-          summarize(turn, counts.get(turn.id) ?? 0, summaryOf(verdicts.get(turn.id))),
+          summarize(turn, counts.get(turn.id) ?? zeroCounts, summaryOf(verdicts.get(turn.id))),
         ),
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       })
@@ -160,7 +178,7 @@ export function createQueryService(deps: QueryDeps): QueryService {
       ])
 
       return lookup<TurnDetailData>({
-        summary: summarize(turn, changes.length, summaryOf(verdict)),
+        summary: summarize(turn, summarizeCounts(changes), summaryOf(verdict)),
         changes,
         commands,
         tests,
@@ -182,9 +200,12 @@ export function createQueryService(deps: QueryDeps): QueryService {
 
       const result = await inspector.refresh(turn, toTurnWorkspace(workspace))
 
+      const counts = summarizeCounts(result.changeSet?.changes ?? [])
       return lookup<EvaluateSafetyData>({
         verdict: result.verdict,
-        changeCount: result.changeSet?.changes.length ?? 0,
+        changeCount: counts.agent + counts.baseline,
+        agentChangeCount: counts.agent,
+        baselineChangeCount: counts.baseline,
       })
     },
 

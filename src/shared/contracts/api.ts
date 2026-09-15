@@ -56,7 +56,7 @@ import type {
  * failing as a pair (one sentence naming both versions) is more useful than
  * failing on the one request a user happened to click.
  */
-export const API_VERSION = 3
+export const API_VERSION = 4
 
 /**
  * The namespace our host methods are registered under, and therefore the prefix
@@ -212,7 +212,16 @@ export interface TurnSummaryDto {
    * a badge shown without it can be read as more confident than it is.
    */
   readonly evidenceCompleteness: EvidenceCompleteness
+  /**
+   * Total rows in the change set. Equal to `agentChangeCount + baselineChangeCount`.
+   * Kept for callers that have not yet been updated to read the two split fields;
+   * new code should pick the right side rather than this sum.
+   */
   readonly changeCount: number
+  /** Files the agent edited/added/deleted/renamed in this turn. */
+  readonly agentChangeCount: number
+  /** Files that were already dirty when the turn started and stayed dirty through it. */
+  readonly baselineChangeCount: number
   /** Absent when no verdict has been computed, which is not the same as `SAFE`. */
   readonly safety?: SafetySummaryDto
 }
@@ -317,8 +326,12 @@ export interface EvaluateSafetyRequest extends TurnscopeRequestBase {
  */
 export interface EvaluateSafetyData {
   readonly verdict: SafetyVerdict
-  /** How many changes the judgement was made against, for a "3 changed" label. */
+  /** Total rows in the change set; equal to `agentChangeCount + baselineChangeCount`. */
   readonly changeCount: number
+  /** Files the agent edited/added/deleted/renamed in this turn. */
+  readonly agentChangeCount: number
+  /** Files that were already dirty when the turn started and stayed dirty through it. */
+  readonly baselineChangeCount: number
 }
 
 // ---------------------------------------------------------------------------

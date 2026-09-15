@@ -55,6 +55,8 @@ export const row = (ordinal: number, overrides: Partial<TurnSummaryDto> = {}): T
   errorCount: 0,
   evidenceCompleteness: 'complete',
   changeCount: 0,
+  agentChangeCount: 0,
+  baselineChangeCount: 0,
   ...overrides,
 })
 
