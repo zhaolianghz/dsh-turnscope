@@ -46,16 +46,24 @@ describe('TurnDetailView', () => {
 
     const rows = [...view.container.querySelectorAll('.turnscope-change')]
     expect(rows).toHaveLength(5)
+    // The detail view groups the change list: agent edits on top, baseline-dirty
+    // paths in a separate list beneath a divider. The test fixture has one
+    // baseline row (`src/b.ts`) so it ends up at index 4, not index 1.
     expect(rows[0]?.textContent).toContain('src/a.ts')
     expect(rows[0]?.textContent).toContain('本轮改动')
-    expect(rows[1]?.textContent).toContain('本轮之前就已修改')
-    expect(rows[1]?.textContent).toContain('本轮开始时已脏')
     // A low-confidence attribution is a different claim, not a quieter version of
     // a confident one, so it is said in words.
-    expect(rows[2]?.textContent).toContain('依据不足')
-    expect(rows[3]?.textContent).toContain('来自 src/old.ts')
-    expect(rows[4]?.textContent).toContain('二进制变更')
-    expect(rows[4]?.getAttribute('data-kind')).toBe('binary_changed')
+    expect(rows[1]?.textContent).toContain('依据不足')
+    expect(rows[2]?.textContent).toContain('来自 src/old.ts')
+    expect(rows[3]?.textContent).toContain('二进制变更')
+    expect(rows[3]?.getAttribute('data-kind')).toBe('binary_changed')
+    expect(rows[4]?.textContent).toContain('src/b.ts')
+    expect(rows[4]?.textContent).toContain('本轮之前就已修改')
+    expect(rows[4]?.textContent).toContain('本轮开始时已脏')
+    // The divider sits between the two groups.
+    const divider = view.container.querySelector('.turnscope-baseline-heading')
+    expect(divider?.textContent).toContain('本轮开始时已脏')
+    expect(divider?.textContent).toContain('1')
   })
 
   it('shows the verdict with its reasons, its evidence, and how old it is', () => {

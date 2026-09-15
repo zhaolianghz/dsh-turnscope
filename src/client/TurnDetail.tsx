@@ -140,11 +140,27 @@ function Loaded({
         {detail.changes.length === 0 ? (
           <p className="turnscope-detail-note">{t('detail.noChanges')}</p>
         ) : (
-          <ul className="turnscope-changes">
-            {detail.changes.map(change => (
-              <Change key={change.id} change={change} diffs={diffs} t={t} />
-            ))}
-          </ul>
+          <>
+            {/* Two groups: agent edits on top, inherited baseline-dirty paths
+                beneath a labelled divider. A turn whose worktree was clean at
+                session start gets only the top group; the divider is omitted
+                so the layout is unchanged for the common case. The per-row
+                `本轮开始时已脏` badge is unchanged — the divider is the bulk
+                signal, the badge is the per-row confirmation. */}
+            <ChangeList changes={detail.changes.filter(c => !c.baseline)} diffs={diffs} t={t} />
+            {detail.changes.some(c => c.baseline) ? (
+              <>
+                <h5 className="turnscope-baseline-heading">
+                  本轮开始时已脏 ({detail.changes.filter(c => c.baseline).length})
+                </h5>
+                <ChangeList
+                  changes={detail.changes.filter(c => c.baseline)}
+                  diffs={diffs}
+                  t={t}
+                />
+              </>
+            ) : null}
+          </>
         )}
         {/* One comparison at a time, under the list it was opened from: the thing
             a reader compares a diff against is the verdict above it, not another
@@ -261,6 +277,23 @@ function Reason({ reason, t }: { readonly reason: SafetyReason } & PropsLocale<'
         {t('detail.evidenceCount', { count: reason.evidenceRefs.length })}
       </span>
     </li>
+  )
+}
+
+function ChangeList({
+  changes,
+  diffs,
+  t,
+}: {
+  readonly changes: readonly FileChange[]
+  readonly diffs: FileDiffFeed | undefined
+} & PropsLocale<'turnscope'>) {
+  return (
+    <ul className="turnscope-changes">
+      {changes.map(change => (
+        <Change key={change.id} change={change} diffs={diffs} t={t} />
+      ))}
+    </ul>
   )
 }
 
