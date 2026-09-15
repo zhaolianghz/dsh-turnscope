@@ -128,6 +128,39 @@ describe('TurnscopeView', () => {
     expect(card(view, 1).textContent).toContain('回滚前先预览')
   })
 
+  it('shows a baseline-dirty chip next to the agent change count when paths were inherited', () => {
+    // The headline count is what the agent did this turn. A dirty worktree at
+    // session start contributes baseline paths, and they must be visible as
+    // such rather than blending into the headline (the bug V0.1.1 fixed).
+    const view = render(<TurnscopeView
+      {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
+      recorded={recordedOf([row(1, {
+        changeCount: 8,
+        agentChangeCount: 3,
+        baselineChangeCount: 5,
+        evidenceCompleteness: 'partial',
+        safety: verdict('CAUTION', 'PREVIEW_REWIND'),
+      })])}
+    />)
+    // Headline is the agent's edits; the inherited count is a separate chip.
+    expect(card(view, 1).textContent).toContain('变更文件3')
+    expect(card(view, 1).textContent).toContain('+5 已脏')
+  })
+
+  it('keeps the baseline chip quiet when no paths were inherited', () => {
+    const view = render(<TurnscopeView
+      {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
+      recorded={recordedOf([row(1, {
+        changeCount: 3,
+        agentChangeCount: 3,
+        baselineChangeCount: 0,
+        safety: verdict('SAFE', 'REWIND'),
+      })])}
+    />)
+    expect(card(view, 1).textContent).toContain('变更文件3')
+    expect(card(view, 1).textContent).not.toContain('已脏')
+  })
+
   it('keeps the evidence qualifier quiet when the evidence is complete', () => {
     const view = render(<TurnscopeView
       {...props(snapshot({ turnTimings: new Map([[1, { startTime: 100, endTime: 130 }]]) }))}
