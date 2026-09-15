@@ -242,6 +242,8 @@ describe('createQueryService', () => {
       const [newest, oldest] = reply.data.turns
       expect(newest?.turnId).toBe('s-1:turn:1')
       expect(newest?.changeCount).toBe(2)
+      expect(newest?.agentChangeCount).toBe(2)
+      expect(newest?.baselineChangeCount).toBe(0)
       expect(newest?.safety).toEqual({
         level: 'FORK_ONLY',
         recommendedAction: 'INSPECT',
@@ -250,8 +252,47 @@ describe('createQueryService', () => {
       // No verdict is not the same as a `SAFE` verdict, and the absence has to
       // survive the wire rather than defaulting to the reassuring answer.
       expect(oldest?.changeCount).toBe(0)
+      expect(oldest?.agentChangeCount).toBe(0)
+      expect(oldest?.baselineChangeCount).toBe(0)
       expect(oldest?.safety).toBeUndefined()
       expect(oldest?.evidenceCompleteness).toBe('complete')
+    })
+
+    it('splits agent edits from baseline-dirty inherited state', async () => {
+      const f = await fixture()
+      await f.seed(1)
+      // Three agent edits and five paths that were dirty before the turn and
+      // stayed dirty. The headline count must reflect the agent's work; the
+      // baseline paths must be visible separately so a UI can label them.
+      await f.repo.putFileChange(changeOn('s-1:turn:0', 'src/agent-1.ts'))
+      await f.repo.putFileChange(changeOn('s-1:turn:0', 'src/agent-2.ts'))
+      await f.repo.putFileChange(changeOn('s-1:turn:0', 'src/agent-3.ts'))
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:bl-1.ts', path: 'work/bl-1.ts', baseline: true }),
+      )
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:bl-2.ts', path: 'work/bl-2.ts', baseline: true }),
+      )
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:bl-3.ts', path: 'work/bl-3.ts', baseline: true }),
+      )
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:bl-4.ts', path: 'work/bl-4.ts', baseline: true }),
+      )
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:bl-5.ts', path: 'work/bl-5.ts', baseline: true }),
+      )
+      // A `binary_changed` row is still a change the agent produced, so it
+      // counts toward the agent total — not as bookkeeping.
+      await f.repo.putFileChange(
+        change({ turnId: 's-1:turn:0', id: 's-1:turn:0:chg:binary.ts', path: 'work/binary.ts', kind: 'binary_changed' }),
+      )
+
+      const reply = await f.service.listTurns({ ...base, sessionId: 's-1', limit: 10 })
+      const row = reply.data.turns[0]
+      expect(row?.agentChangeCount).toBe(4)
+      expect(row?.baselineChangeCount).toBe(5)
+      expect(row?.changeCount).toBe(9)
     })
 
     it('reports the freshest verdict when a turn has been judged more than once', async () => {
@@ -440,6 +481,42 @@ describe('createQueryService', () => {
 
       expect(reply.data).toBeNull()
       expect(f.refreshCalls).toEqual([])
+    })
+
+    it('returns the agent/baseline split from the refreshed change set', async () => {
+      const f = await fixture()
+      await f.seed(1)
+      // The inspector double in `fixture()` always returns `changeSet: undefined`;
+      // swap it out so the split has something to sum.
+      const inspector: TurnInspector = {
+        observe: async () => undefined,
+        inspect: async () => undefined,
+        refresh: async turn => ({
+          turnId: turn.id,
+          changeSet: {
+            changes: [
+              { kind: 'modified', baseline: false },
+              { kind: 'modified', baseline: false },
+              { kind: 'added', baseline: false },
+              { kind: 'modified', baseline: true },
+              { kind: 'modified', baseline: true },
+            ],
+          } as never,
+          verdict: { level: 'SAFE' } as never,
+          current: undefined as never,
+          pre: undefined,
+          post: undefined,
+        }),
+        latestVerdict: async () => undefined,
+      }
+      const service = createQueryService({ sink: f.repo, inspector, diffs: f as never })
+
+      const reply = await service.evaluateSafety({ ...base, turnId: 's-1:turn:0' })
+
+      // 3 agent edits, 2 baseline-dirty.
+      expect(found(reply).changeCount).toBe(5)
+      expect(found(reply).agentChangeCount).toBe(3)
+      expect(found(reply).baselineChangeCount).toBe(2)
     })
   })
 
