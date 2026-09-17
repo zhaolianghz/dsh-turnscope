@@ -66,7 +66,7 @@ export function TurnscopeView({
   onRefresh,
   detail,
 }: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps) {
-  const openState = useSession(snapshot => snapshot.openState)
+  const openState = useSession(snapshot => snapshot?.openState ?? 'loading')
   const turns = useSession(deriveTurnModels)
 
   if (openState === 'loading') return <div role="status">{t('state.loading')}</div>

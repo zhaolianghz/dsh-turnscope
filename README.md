@@ -2,11 +2,15 @@
 
 **Understand every agent turn. Rewind safely. Retry without losing good work.**
 
-`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 patch fixes the baseline-dirty display (see Changelog below).
+`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 patches refine renderer behavior (see Changelog below).
 
-> Status: **V0.1 published** (`@zhaolianghz/dsh-turnscope@0.1.0`) for DSH `0.1.1-rc.2`. V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `3`. Forked retries remain planned for V0.3.
+> Status: **V0.1 published** (`@zhaolianghz/dsh-turnscope@0.1.0`) for DSH `0.1.1-rc.2`. V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `3`. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 patches refine renderer behavior without bumping `API_VERSION`. Forked retries remain planned for V0.3.
 
 ## Changelog
+
+### 0.1.4 — 2026-09-15
+
+Crash fix. The 0.1.3 renderer crashed DSH's `conversation.view` slot whenever the `useSession` selector received a snapshot whose `nodes` field was not yet populated — a normal first-render case in this DSH build, where `getSnapshot()` can return `undefined` or a stub before the first real emission. The selector now treats a missing `nodes` / `turnTimings` / `turnEnds` as "no data" and returns an empty list; the `openState` reader does the same. The V0.1.3 bootstrap-context filter is unchanged. Renderer-only fix; no `API_VERSION` bump. 599 tests (598 → 599, +1), typecheck clean, client bundle 78.42 kB.
 
 ### 0.1.3 — 2026-09-15
 

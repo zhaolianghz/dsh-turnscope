@@ -49,10 +49,21 @@ function activityFromNode(node: ConversationNode): ActivityModel {
 }
 
 export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnModel[] {
-  const endSeqs = [...snapshot.turnEnds.entries()].sort((left, right) => left[1] - right[1])
-  const openTurn = [...snapshot.turnTimings.keys()]
+  // `useSession` calls the selector on every snapshot emission, including the
+  // first one which may be `undefined` (no data yet) or a stub. Treat a
+  // missing `nodes` field, missing `turnTimings`, or missing `turnEnds` as
+  // "no data" and return an empty list — the view already has a loading
+  // branch and an empty branch, and the renderer should never crash on a
+  // partial snapshot.
+  const nodes = snapshot?.nodes ?? []
+  const turnTimings: ConversationSnapshot['turnTimings'] = snapshot?.turnTimings ?? new Map()
+  const turnEnds: ConversationSnapshot['turnEnds'] = snapshot?.turnEnds ?? new Map()
+  if (turnTimings.size === 0) return []
+
+  const endSeqs = [...turnEnds.entries()].sort((left, right) => left[1] - right[1])
+  const openTurn = [...turnTimings.keys()]
     .sort((left, right) => right - left)
-    .find(turn => !snapshot.turnEnds.has(turn))
+    .find(turn => !turnEnds.has(turn))
   const turnForSeq = (seq: number): number | undefined =>
     endSeqs.find(([, endSeq]) => seq <= endSeq)?.[0] ?? openTurn
   // A session's bootstrap burst — the instructions, catalog, and recall the
@@ -63,13 +74,13 @@ export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnM
   // keep the entries: there is no signal to distinguish bootstrap from
   // "the user is composing their first prompt" and dropping them would be
   // worse than showing them.
-  const firstRealSeq = snapshot.nodes.reduce<number | undefined>((min, n) => {
+  const firstRealSeq = nodes.reduce<number | undefined>((min, n) => {
     if (n.kind !== 'user' && n.kind !== 'assistant') return min
     return min === undefined ? n.seq : Math.min(min, n.seq)
   }, undefined)
 
   const groups = new Map<number, ConversationNode[]>()
-  for (const conversationNode of snapshot.nodes) {
+  for (const conversationNode of nodes) {
     if (conversationNode.kind === 'context'
         && firstRealSeq !== undefined
         && conversationNode.seq < firstRealSeq) {
@@ -79,22 +90,22 @@ export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnM
       ? conversationNode.turn
       : undefined
     const turn = explicit ?? turnForSeq(conversationNode.seq)
-    if (turn === undefined || !snapshot.turnTimings.has(turn)) continue
+    if (turn === undefined || !turnTimings.has(turn)) continue
     const group = groups.get(turn) ?? []
     group.push(conversationNode)
     groups.set(turn, group)
   }
 
-  return [...snapshot.turnTimings.entries()].map(([turn, timing]): TurnModel => {
-    const nodes = groups.get(turn) ?? []
-    const hasTurnError = nodes.some(item => item.kind === 'turn-error')
-    const hasMaxTokens = nodes.some(item => item.kind === 'turn-max-tokens')
+  return [...turnTimings.entries()].map(([turn, timing]): TurnModel => {
+    const turnNodes = groups.get(turn) ?? []
+    const hasTurnError = turnNodes.some(item => item.kind === 'turn-error')
+    const hasMaxTokens = turnNodes.some(item => item.kind === 'turn-max-tokens')
     const status: TurnStatus = hasTurnError
       ? 'failed'
       : hasMaxTokens
         ? 'max-tokens'
         : timing.endTime === undefined ? 'running' : 'completed'
-    const errorCount = nodes.filter(item =>
+    const errorCount = turnNodes.filter(item =>
       item.kind === 'turn-error'
       || (item.kind === 'tool-result' && item.isError)
       || (item.kind === 'command' && item.outcome?.kind === 'error')).length
@@ -106,9 +117,9 @@ export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnM
       ...(timing.endTime === undefined
         ? {}
         : { endedAt: timing.endTime, durationMs: Math.max(0, timing.endTime - timing.startTime) }),
-      toolCount: nodes.filter(item => item.kind === 'tool-result').length,
+      toolCount: turnNodes.filter(item => item.kind === 'tool-result').length,
       errorCount,
-      activities: Object.freeze(nodes.map(activityFromNode)),
+      activities: Object.freeze(turnNodes.map(activityFromNode)),
     })
   }).sort((left, right) => right.turn - left.turn)
 }

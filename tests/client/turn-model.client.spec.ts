@@ -107,4 +107,16 @@ describe('deriveTurnModels', () => {
     expect(turn.activities).toHaveLength(2)
     expect(turn.activities.every(activity => activity.kind === 'system')).toBe(true)
   })
+
+  it('returns an empty list and does not crash when the snapshot is undefined or missing nodes', () => {
+    // `useSession` can call the selector on an undefined or stub snapshot
+    // before the first real emission. The renderer must not throw on that
+    // path; an empty list is the right answer because the view's loading
+    // branch will replace it as soon as a real snapshot arrives.
+    const empty = deriveTurnModels(undefined as unknown as ConversationSnapshot)
+    expect(empty).toEqual([])
+
+    const stub = deriveTurnModels({} as unknown as ConversationSnapshot)
+    expect(stub).toEqual([])
+  })
 })
