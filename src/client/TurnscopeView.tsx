@@ -71,7 +71,9 @@ export interface TurnscopeViewProps {
  * type it structurally here so the renderer compiles against the local
  * type-only declaration while still pulling the live hook from DSH.
  */
-type ChatSelectorHook = (() => ChatSnapshot | undefined) | undefined
+type ChatSelectorHook =
+  | (<S>(selector: (snapshot: ChatSnapshot) => S, equality?: (a: S, b: S) => boolean) => S | undefined)
+  | undefined
 
 export function TurnscopeView({
   useSession,
@@ -92,7 +94,9 @@ export function TurnscopeView({
   // entries before the chat binding resolves). `EMPTY_CHAT` has empty maps,
   // so `deriveTurnModels` short-circuits to `[]` — the view shows its
   // empty-state branch until chat data actually arrives.
-  const chat: ChatSnapshot = useChat !== undefined ? (useChat() ?? EMPTY_CHAT) : EMPTY_CHAT
+  const chat: ChatSnapshot = useChat !== undefined
+    ? (useChat(snapshot => snapshot) ?? EMPTY_CHAT)
+    : EMPTY_CHAT
   const turns = useMemo(() => deriveTurnModels(chat), [chat])
 
   if (openState === 'loading') return <div role="status">{t('state.loading')}</div>

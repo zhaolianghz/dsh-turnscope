@@ -205,7 +205,7 @@ export const props = (
   const chatValue = chatArg
   return {
     useSession: <T,>(selector: (state: SessionSnapshotFixture) => T) => selector(sessionValue),
-    useChat: () => chatValue,
+    useChat: <T,>(selector: (snapshot: ChatSnapshot) => T) => (chatValue === undefined ? undefined : selector(chatValue)),
     t: translate,
   } as Parameters<typeof TurnscopeView>[0]
 }
