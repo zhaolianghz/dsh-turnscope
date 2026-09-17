@@ -1,6 +1,8 @@
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ChatSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { EMPTY_CHAT } from './chat-empty.ts'
 import { TurnDetailView } from './TurnDetail.tsx'
 import { RecoverySection } from './RecoverySection.tsx'
 import { useRecoveryFeed } from './recovery-feeds.ts'
@@ -59,15 +61,39 @@ export interface TurnscopeViewProps {
   readonly detail?: TurnDetailWiring | undefined
 }
 
+/**
+ * The `useChat` selector hook DSH's chat plugin attaches to every
+ * `'conversation.view'` slot via `ctx.uiSession.provide({ hooks: ['chat'] })`.
+ *
+ * The slot's `ConvViewProps` type doesn't declare this prop because `chat` is
+ * not part of `@deepseek-ai/dsh-client-ui-slots`' standard kit — it's an
+ * extended slot-inject hook contributed by the chat plugin at runtime. We
+ * type it structurally here so the renderer compiles against the local
+ * type-only declaration while still pulling the live hook from DSH.
+ */
+type ChatSelectorHook = (() => ChatSnapshot | undefined) | undefined
+
 export function TurnscopeView({
   useSession,
+  useChat,
   t,
   recorded,
   onRefresh,
   detail,
-}: ConvViewProps & PropsLocale<'turnscope'> & TurnscopeViewProps) {
+}: ConvViewProps & PropsLocale<'turnscope'> & { readonly useChat?: ChatSelectorHook } & TurnscopeViewProps) {
+  // `useSession` carries session-lifecycle / interaction-state metadata
+  // (openState, queue, running, promptError, …). `useChat` is the separate
+  // hook DSH provides for the Chat view data (nodes, turn timings, timeline).
+  // Session metadata and chat data are two different observables; pulling
+  // chat nodes through `useSession` would race against the chat builder's
+  // publication cadence. See spec `2026-09-17-v0.1.5-chat-hook-snapshot.md`.
   const openState = useSession(snapshot => snapshot?.openState ?? 'loading')
-  const turns = useSession(deriveTurnModels)
+  // `useChat` may be absent on the very first render (slot framework mounts
+  // entries before the chat binding resolves). `EMPTY_CHAT` has empty maps,
+  // so `deriveTurnModels` short-circuits to `[]` — the view shows its
+  // empty-state branch until chat data actually arrives.
+  const chat: ChatSnapshot = useChat !== undefined ? (useChat() ?? EMPTY_CHAT) : EMPTY_CHAT
+  const turns = useMemo(() => deriveTurnModels(chat), [chat])
 
   if (openState === 'loading') return <div role="status">{t('state.loading')}</div>
   if (turns.length === 0) return <div>{t('state.empty')}</div>

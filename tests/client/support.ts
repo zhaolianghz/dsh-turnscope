@@ -6,7 +6,7 @@
  * conversation snapshot and a host answer — and three copies of "what a host row
  * looks like" is three places to update when the contract grows a field.
  */
-import type { ConversationNode, ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
 import { vi } from 'vitest'
 import { createTurnscopeView, type TurnscopeView } from '../../src/client/TurnscopeView.tsx'
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
@@ -22,22 +22,95 @@ import type { TurnDetailWiring } from '../../src/client/TurnscopeView.tsx'
 export const node = (value: object): ConversationNode => value as unknown as ConversationNode
 
 /**
- * A conversation snapshot.
+ * The minimal `ChatSnapshot` a renderer-level test needs.
+ *
+ * Only the fields `deriveTurnModels` actually reads (`legacy.nodes`,
+ * `legacy.turnTimings`, `legacy.turnEnds`) are populated; the rest is the
+ * slot framework's stable identity (`order` is an empty list, `nodes` /
+ * `locations` / `timeline` / `navigation` are stubbed to satisfy the
+ * interface without influencing the assertions). The session-snapshot
+ * analogue (`sessionId`, `openState`, etc.) lives on `useSession`; this
+ * helper only covers chat data.
+ */
+export const chatSnapshot = (overrides: {
+  readonly nodes?: readonly ConversationNode[]
+  readonly turnTimings?: ChatSnapshot['legacy']['turnTimings']
+  readonly turnEnds?: ChatSnapshot['legacy']['turnEnds']
+} = {}): ChatSnapshot => {
+  const legacy = {
+    nodes: overrides.nodes ?? [],
+    turnTimings: overrides.turnTimings ?? new Map(),
+    turnEnds: overrides.turnEnds ?? new Map(),
+    partial: null,
+    runningCalls: [],
+  }
+  return {
+    order: [],
+    nodes: {
+      get: () => undefined,
+      source: () => ({ getSnapshot: () => undefined, subscribe: () => () => {} }),
+      processSource: () => ({ getSnapshot: () => undefined, subscribe: () => () => {} }),
+      values: () => [],
+    } as unknown as ChatSnapshot['nodes'],
+    locations: {
+      getTurn: () => [],
+      getStep: () => [],
+    },
+    timeline: { turnOrder: [], turns: new Map() },
+    legacy,
+  }
+}
+
+/**
+ * A conversation session snapshot (the metadata slice `useSession` exposes).
  *
  * `sessionId` is branded upstream, so the fixture casts at the boundary: the view
  * only ever compares and forwards it, and a test that had to mint a brand would be
  * testing the brand.
  */
-export const snapshot = (
-  overrides: Omit<Partial<ConversationSnapshot>, 'sessionId'> & { readonly sessionId?: string } = {},
-): ConversationSnapshot => ({
+export type SessionSnapshotFixture = {
+  openState: 'cold' | 'loading' | 'open' | 'error'
+  sessionId: string
+  queue: readonly unknown[]
+  pendingSubmissions: readonly unknown[]
+  running: boolean
+  subagent: null
+  removed: boolean
+  openError: null
+  hasMore: boolean
+  loadingOlder: boolean
+  promptError: null
+  blank: boolean
+  lastAgentError: null
+  promptAttempted: boolean
+  awaitingFirstTurn: boolean
+}
+
+export const sessionSnapshot = (
+  overrides: Partial<SessionSnapshotFixture> = {},
+): SessionSnapshotFixture => ({
   openState: 'open',
   sessionId: 's-1',
-  nodes: [],
-  turnTimings: new Map(),
-  turnEnds: new Map(),
+  queue: [],
+  pendingSubmissions: [],
+  running: false,
+  subagent: null,
+  removed: false,
+  openError: null,
+  hasMore: false,
+  loadingOlder: false,
+  promptError: null,
+  blank: false,
+  lastAgentError: null,
+  promptAttempted: false,
+  awaitingFirstTurn: false,
   ...overrides,
-} as unknown as ConversationSnapshot)
+})
+
+/** Back-compat alias: callers still asking for the old "snapshot" name. */
+export const snapshot = (
+  overrides: Partial<SessionSnapshotFixture> & LegacySnapshotOverrides = {},
+): SessionSnapshotFixture & LegacySnapshotOverrides => sessionSnapshot(overrides) as SessionSnapshotFixture & LegacySnapshotOverrides
 
 export const verdict = (
   level: SafetySummaryDto['level'],
@@ -76,10 +149,66 @@ export const translate = (key: TurnscopeKey, params?: Record<string, unknown>): 
     ? zh[key]
     : zh[key].replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match)
 
-export const props = (value: ConversationSnapshot): Parameters<typeof TurnscopeView>[0] => ({
-  useSession: <T,>(selector: (state: ConversationSnapshot) => T) => selector(value),
-  t: translate,
-} as Parameters<typeof TurnscopeView>[0])
+/** The seats a test renders the view with. */
+export interface ViewRenderProps {
+  readonly session?: SessionSnapshotFixture
+  readonly chat?: ChatSnapshot
+}
+
+/**
+ * The keys the old `ConversationSnapshot` form exposed (turnTimings, turnEnds,
+ * nodes). The renderer now reads chat data from a `ChatSnapshot` instead of a
+ * `ConversationSnapshot`, but a long list of existing tests still pass these
+ * fields as session-level overrides. `props()` accepts them here and routes
+ * them into a built `ChatSnapshot` for the render harness.
+ */
+interface LegacySnapshotOverrides {
+  readonly turnTimings?: ChatSnapshot['legacy']['turnTimings']
+  readonly turnEnds?: ChatSnapshot['legacy']['turnEnds']
+  readonly nodes?: readonly ConversationNode[]
+}
+
+const isLegacyOverrides = (value: unknown): value is LegacySnapshotOverrides =>
+  typeof value === 'object' && value !== null
+  && ('turnTimings' in value || 'turnEnds' in value || 'nodes' in value)
+
+export const props = (
+  sessionOrOverrides: SessionSnapshotFixture | ChatSnapshot | LegacySnapshotOverrides | ViewRenderProps,
+  chat?: ChatSnapshot,
+): Parameters<typeof TurnscopeView>[0] => {
+  let sessionArg: SessionSnapshotFixture
+  let chatArg: ChatSnapshot | undefined
+  const value = sessionOrOverrides as Record<string, unknown>
+  if (value !== null && typeof value === 'object' && 'legacy' in value) {
+    // A full ChatSnapshot.
+    sessionArg = sessionSnapshot()
+    chatArg = value as unknown as ChatSnapshot
+  } else if (isLegacyOverrides(value)) {
+    // The old `snapshot({turnTimings, turnEnds, nodes})` shape. Build a session
+    // from the rest and a chat snapshot from the legacy overrides.
+    const { turnTimings, turnEnds, nodes, ...rest } = value as LegacySnapshotOverrides & Record<string, unknown>
+    sessionArg = sessionSnapshot(rest as Partial<SessionSnapshotFixture>)
+    chatArg = chatSnapshot({
+      ...(turnTimings !== undefined ? { turnTimings } : {}),
+      ...(turnEnds !== undefined ? { turnEnds } : {}),
+      ...(nodes !== undefined ? { nodes } : {}),
+    })
+  } else if ('openState' in value) {
+    sessionArg = value as unknown as SessionSnapshotFixture
+    chatArg = chat
+  } else {
+    const arg = sessionOrOverrides as ViewRenderProps
+    sessionArg = arg.session ?? sessionSnapshot()
+    chatArg = arg.chat
+  }
+  const sessionValue = sessionArg
+  const chatValue = chatArg
+  return {
+    useSession: <T,>(selector: (state: SessionSnapshotFixture) => T) => selector(sessionValue),
+    useChat: () => chatValue,
+    t: translate,
+  } as Parameters<typeof TurnscopeView>[0]
+}
 
 /**
  * The seats `TurnDetailView` needs.
@@ -98,9 +227,10 @@ export const detailProps = (
 
 /** The same seats, minus the one the connected view supplies itself. */
 export const connectedProps = (
-  value: ConversationSnapshot,
+  sessionOrOverrides: SessionSnapshotFixture | ChatSnapshot | LegacySnapshotOverrides | ViewRenderProps,
+  chat?: ChatSnapshot,
 ): Parameters<ReturnType<typeof createTurnscopeView>>[0] =>
-  props(value) as unknown as Parameters<ReturnType<typeof createTurnscopeView>>[0]
+  props(sessionOrOverrides, chat) as unknown as Parameters<ReturnType<typeof createTurnscopeView>>[0]
 
 /** One recorded file change, with the attribution that makes it interesting. */
 export const change = (

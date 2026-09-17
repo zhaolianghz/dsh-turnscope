@@ -2,11 +2,15 @@
 
 **Understand every agent turn. Rewind safely. Retry without losing good work.**
 
-`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 patches refine renderer behavior (see Changelog below).
+`dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 patches refine renderer behavior (see Changelog below).
 
-> Status: **V0.1 published** (`@zhaolianghz/dsh-turnscope@0.1.0`) for DSH `0.1.1-rc.2`. V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `3`. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 patches refine renderer behavior without bumping `API_VERSION`. Forked retries remain planned for V0.3.
+> Status: **V0.1.5 published** (`@zhaolianghz/dsh-turnscope@0.1.5`) for DSH `0.1.6-alpha.1` (the plugin's bundled client code consumes the runtime types shipped in `0.1.1-rc.2`, which are forward-compatible with the actual `ChatSnapshot` shape `0.1.6-alpha.1` exposes via the `useChat` hook). V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `4` (since 0.1.1). The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 patches refine renderer behavior without bumping `API_VERSION`. Forked retries remain planned for V0.3.
 
 ## Changelog
+
+### 0.1.5 — 2026-09-17
+
+Chat data source fix. The V0.1 → V0.1.4 renderer was reading chat nodes / turn timings / turn ends through `useSession((s) => s.nodes.filter(...))` etc., but DSH `0.1.6-alpha.1`'s `SessionSnapshot` no longer carries those fields — the chat builder output lives behind a separate `useChat` hook that returns a `ChatSnapshot` (with `legacy.{nodes, turnTimings, turnEnds}`). The renderer now reads from `useChat()` (and only `openState` continues to come from `useSession`). Renderer-only fix; no `API_VERSION` bump, no host changes, no DB migration. 599 tests (599 → 599, fixtures rebuilt around `ChatSnapshot`), typecheck clean.
 
 ### 0.1.4 — 2026-09-15
 
@@ -82,7 +86,7 @@ Turnscope will never run `git reset --hard`, rewrite the user's branch, or silen
 
 - Node.js 22.19 or newer
 - pnpm 11.7
-- A local DSH `0.1.1-rc.2` installation
+- A local DSH `0.1.6-alpha.1` installation (the plugin's bundled client code consumes the runtime types shipped in `0.1.1-rc.2`, which are forward-compatible with the `ChatSnapshot` shape `0.1.6-alpha.1` exposes via the `useChat` hook)
 
 ## Develop
 
@@ -98,7 +102,7 @@ The build emits the host entry, the browser handoff bundle expected by DSH's `wi
 
 ## Load in local DSH
 
-Build Turnscope first. From a local DSH `0.1.1-rc.2` source checkout, add it as a development dependency of the `web` profile:
+Build Turnscope first. From a local DSH `0.1.6-alpha.1` source checkout, add it as a development dependency of the `web` profile:
 
 ```sh
 cd /path/to/deepseek-harness
@@ -116,7 +120,7 @@ the bundle layer (rare; documented for completeness):
 pnpm dsh --profile web
 ```
 
-Verified on `0.1.1-rc.2`: the home page serves with turnscope in the
+Verified on `0.1.6-alpha.1`: the home page serves with turnscope in the
 boot manifest (`/plugins/@zhaolianghz/dsh-turnscope/client.js`), and
 the client bundle exports `previewRewind`, `listTurns`,
 `RecoverySection`, and the other DTOs.

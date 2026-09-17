@@ -1,4 +1,4 @@
-import type { ConversationNode, ConversationSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
 
 export type TurnStatus = 'running' | 'completed' | 'failed' | 'max-tokens'
 
@@ -48,16 +48,18 @@ function activityFromNode(node: ConversationNode): ActivityModel {
   }
 }
 
-export function deriveTurnModels(snapshot: ConversationSnapshot): readonly TurnModel[] {
-  // `useSession` calls the selector on every snapshot emission, including the
-  // first one which may be `undefined` (no data yet) or a stub. Treat a
-  // missing `nodes` field, missing `turnTimings`, or missing `turnEnds` as
-  // "no data" and return an empty list — the view already has a loading
-  // branch and an empty branch, and the renderer should never crash on a
-  // partial snapshot.
-  const nodes = snapshot?.nodes ?? []
-  const turnTimings: ConversationSnapshot['turnTimings'] = snapshot?.turnTimings ?? new Map()
-  const turnEnds: ConversationSnapshot['turnEnds'] = snapshot?.turnEnds ?? new Map()
+export function deriveTurnModels(chat: ChatSnapshot): readonly TurnModel[] {
+  // The renderer reads chat data through DSH's `useChat` hook, which returns a
+  // `ChatSnapshot`. Turn timing and end data live on the snapshot's `legacy`
+  // compatibility projection (same shape DSH's own `StatsLine` and `ChatView`
+  // components pull from via `useChat((s) => s.legacy.turnTimings)`).
+  //
+  // An empty `legacy.turnTimings` is the "blank session" signal — no turn has
+  // started yet. Return an empty list and let the view render its
+  // empty-state branch.
+  const turnTimings = chat.legacy.turnTimings
+  const turnEnds = chat.legacy.turnEnds
+  const nodes = chat.legacy.nodes
   if (turnTimings.size === 0) return []
 
   const endSeqs = [...turnEnds.entries()].sort((left, right) => left[1] - right[1])

@@ -1,6 +1,6 @@
 {
   "name": "@zhaolianghz/dsh-turnscope",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "description": "Turn-level safety inspection, change attribution, safe rewind, and isolated retry for DeepSeek Harness coding sessions.",
   "type": "module",
