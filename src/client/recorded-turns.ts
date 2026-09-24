@@ -61,15 +61,43 @@ export function useRecordedTurns(
 
   useEffect(() => {
     let live = true
-    void host
-      .listTurns({ apiVersion: API_VERSION, sessionId, limit: TURN_PAGE_LIMIT.default })
-      .then(reply => {
+    void (async () => {
+      const rows: TurnSummaryDto[] = []
+      const seen = new Set<number>()
+      let cursor: number | undefined
+      while (live) {
+        const reply = await host.listTurns({
+          apiVersion: API_VERSION, sessionId, limit: TURN_PAGE_LIMIT.default,
+          ...(cursor === undefined ? {} : { cursor }),
+        })
+        if (!live) return
+        if (reply.kind !== 'value') {
+          setAnswer({ sessionId, recorded: rows.length === 0
+            ? read(reply)
+            : { turns: byOrdinal(rows), ...(reply.kind === 'unusable' ? { problem: reply.detail } : {}) },
+          })
+          return
+        }
+        rows.push(...reply.value.turns)
+        // Publish each page as it arrives so a long session can show its newest
+        // verdicts while older pages are still being fetched.
+        setAnswer({ sessionId, recorded: { turns: byOrdinal(rows) } })
+        const next = reply.value.nextCursor
+        if (next === undefined) {
         // A session switch or an unmount during the round trip must not write the
         // previous session's verdicts onto the new one. The session is captured
         // here as well as read at render time, so a late answer is discarded
         // rather than kept as a fact about the wrong conversation.
-        if (live) setAnswer({ sessionId, recorded: read(reply) })
-      })
+          return
+        }
+        if (seen.has(next)) {
+          setAnswer({ sessionId, recorded: { turns: byOrdinal(rows), problem: 'host repeated a page cursor' } })
+          return
+        }
+        seen.add(next)
+        cursor = next
+      }
+    })()
     return () => {
       live = false
     }

@@ -235,6 +235,50 @@ describe('safe rewind, over a real repository', () => {
     expect(await read(f.root, 'src/auth.ts')).toBe('version 3, the user again\n')
   })
 
+  it('preserves a newly created file edited after preview and leaves earlier files untouched', async () => {
+    const f = await fixture()
+    await runTurn(f)
+    const preview = await f.recovery.previewRewind({
+      apiVersion: API_VERSION,
+      turnId: TURN_ID,
+      evaluationId: 'eval-created-drift',
+    })
+    const plan = preview.data?.plan
+    expect(plan).toBeDefined()
+
+    await writeRepoFile(f.root, 'tests/auth.test.ts', 'user changed this after preview\n')
+    const applied = await f.recovery.applyRewind({ apiVersion: API_VERSION, planId: plan!.id })
+
+    expect(applied.data?.result?.status).not.toBe('completed')
+    expect(await read(f.root, 'tests/auth.test.ts')).toBe('user changed this after preview\n')
+    expect(await read(f.root, 'src/auth.ts')).toBe('version 2, by the agent\n')
+  })
+
+  it('restores the dirty file bytes from the turn start instead of Git HEAD', async () => {
+    const f = await fixture()
+    await writeRepoFile(f.root, 'src/auth.ts', 'committed version\n')
+    await commitAll(f.root, 'initial')
+    await writeRepoFile(f.root, 'src/auth.ts', 'user version before turn\n')
+    await f.inspector.observe(
+      turnRecord({ id: TURN_ID, workspaceId: WORKSPACE_ID, status: 'running', endedAt: undefined }),
+      f.workspace, undefined,
+    )
+    await writeRepoFile(f.root, 'src/auth.ts', 'agent version\n')
+    await f.inspector.observe(
+      turnRecord({ id: TURN_ID, workspaceId: WORKSPACE_ID, status: 'completed' }),
+      f.workspace, 'running',
+    )
+    const preview = await f.recovery.previewRewind({
+      apiVersion: API_VERSION, turnId: TURN_ID, evaluationId: 'dirty-pre',
+    })
+    expect(preview.data?.plan).toBeDefined()
+    const applied = await f.recovery.applyRewind({
+      apiVersion: API_VERSION, planId: preview.data!.plan!.id,
+    })
+    expect(applied.data?.result?.status).toBe('completed')
+    expect(await read(f.root, 'src/auth.ts')).toBe('user version before turn\n')
+  })
+
   it('refuses to apply a preview the user sat on', async () => {
     const f = await fixture()
     await runTurn(f)

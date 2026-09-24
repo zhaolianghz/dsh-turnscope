@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { CallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Fiber } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -91,7 +91,7 @@ describe('trace core over a real session store', () => {
     session.append('tool/call', {
       turn: 0,
       step: 0,
-      callId: CallId('c1'),
+      callId: ToolCallId('c1'),
       name: 'read_file',
       arguments: '{"path":"x"}',
     })
@@ -101,7 +101,7 @@ describe('trace core over a real session store', () => {
         turn: 0,
         step: 0,
         message: createToolResultMessage({
-          callId: CallId('c1'),
+          callId: ToolCallId('c1'),
           content: [{ type: 'text', text: `the file said ${SECRET}` }],
           isError: false,
         }),
@@ -230,7 +230,7 @@ describe('trace core over a real session store', () => {
     session.append('tool/call', {
       turn: 0,
       step: 0,
-      callId: CallId('c1'),
+      callId: ToolCallId('c1'),
       name: 'write_file',
       arguments: '{"path":"app.ts"}',
     })
@@ -250,7 +250,7 @@ describe('trace core over a real session store', () => {
           turn: 0,
           step: 0,
           message: createToolResultMessage({
-            callId: CallId('c1'),
+            callId: ToolCallId('c1'),
             content: [{ type: 'text', text: 'wrote app.ts' }],
             isError: false,
           }),

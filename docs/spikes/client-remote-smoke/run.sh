@@ -20,17 +20,24 @@
 #      envelope our browser bundle sends — answers from the real host, which is
 #      the host half of the client API proved in the same process that calls it.
 #
-# Preconditions: a working `dsh` on PATH and at least one existing profile that
-# already has `@deepseek-ai/dsh-web-app` installed. We reuse that profile's
-# shared `node_modules` by symlink rather than re-installing the ~150-package
-# web stack into a scratch home. Nothing outside $WORK is written.
+# Preconditions: a working `dsh` on PATH and `@deepseek-ai/dsh-web-app`
+# available in the project's pinned install, a DSH profile, or
+# DSH_SHARED_NODE_MODULES. We reuse those dependencies by symlink rather than
+# installing the web stack into a scratch home. Nothing outside $WORK is written.
 #
 # Usage: run.sh [/path/to/turnscope-repo]
 set -euo pipefail
 
 REPO="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHARED_NODE_MODULES="${DSH_SHARED_NODE_MODULES:-$HOME/.dsh/profiles/node_modules}"
+if [ -n "${DSH_SHARED_NODE_MODULES:-}" ]; then
+  SHARED_NODE_MODULES="$DSH_SHARED_NODE_MODULES"
+elif [ -d "$REPO/node_modules/@deepseek-ai/dsh" ]; then
+  DSH_PACKAGE="$(realpath "$REPO/node_modules/@deepseek-ai/dsh")"
+  SHARED_NODE_MODULES="$(dirname "$(dirname "$DSH_PACKAGE")")"
+else
+  SHARED_NODE_MODULES="$HOME/.dsh/profiles/node_modules"
+fi
 PORT="${PORT:-38517}"
 CDP_PORT="${CDP_PORT:-9333}"
 
@@ -81,7 +88,7 @@ cat > "$PROBE/package.json" <<'JSON'
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-runtime"],
+      "inject": ["@deepseek-ai/dsh-client-connection"],
       "platform": "web",
       "immediately": true
     }
@@ -189,10 +196,15 @@ DSH_HOME="$WORK/home" TS_SEED_WORKSPACE="$SEED_WORKSPACE" \
 DSH_PID=$!
 disown "$DSH_PID" 2>/dev/null || true
 for _ in $(seq 1 60); do
-  curl -sf -o "$WORK/index.html" "http://127.0.0.1:$PORT/" && break
+  APP_URL="$(sed -n 's/^dsh web: \(http:\/\/127\.0\.0\.1:[0-9]*\/?token=[^[:space:]]*\).*/\1/p' "$WORK/dsh.log" | head -1)"
+  [ -n "$APP_URL" ] && break
   sleep 1
 done
-curl -sf -o "$WORK/index.html" "http://127.0.0.1:$PORT/" || { cat "$WORK/dsh.log"; exit 1; }
+[ -n "${APP_URL:-}" ] || { echo "DSH did not report its Web address" >&2; exit 1; }
+curl -sfL -c "$WORK/cookies.txt" -b "$WORK/cookies.txt" -o "$WORK/index.html" "$APP_URL" || {
+  echo "DSH did not serve the authenticated Web page" >&2
+  exit 1
+}
 
 echo "== our client entries in window.__DSH_BOOT__ =="
 node "$HERE/check-boot.mjs" "$WORK/index.html"
@@ -213,11 +225,11 @@ if [ -n "${INSPECT:-}" ]; then
   # Reconnaissance mode: dump what the page renders instead of asserting the
   # round trip. Nothing below this block runs, so the proof's verdict cannot be
   # affected by an exploratory edit to `inspect.mjs`.
-  node "$HERE/inspect.mjs" "$CDP_PORT" "http://127.0.0.1:$PORT/"
+  node "$HERE/inspect.mjs" "$CDP_PORT" "$APP_URL"
   exit 0
 fi
 
-node "$HERE/drive.mjs" "$CDP_PORT" "http://127.0.0.1:$PORT/" | tee "$WORK/report.txt"
+node "$HERE/drive.mjs" "$CDP_PORT" "$APP_URL" | tee "$WORK/report.txt"
 
 echo "== verdict =="
 grep -q 'apply() ran' "$WORK/report.txt" || { echo "FAIL: connection was not injected" >&2; exit 1; }

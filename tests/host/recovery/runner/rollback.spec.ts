@@ -13,6 +13,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -24,6 +25,7 @@ import type { RecoveryFileOperation, RecoveryJournalEntry } from '../../../../sr
 function entry(planId: string, seq: number, op: RecoveryFileOperation, state: RecoveryJournalEntry['state']): RecoveryJournalEntry {
   return { schemaVersion: 3, planId, seq, operation: op, state, occurredAt: 1_700_000_000_000 + seq }
 }
+const sha = (value: string): string => `sha256:${createHash('sha256').update(value).digest('hex')}`
 
 describe('rollbackUnfinished', () => {
   let worktree: string
@@ -105,5 +107,43 @@ describe('rollbackUnfinished', () => {
     expect(rolled).toEqual([{ planId, path: p1, seq: 1 }])
     expect(await readFile(join(worktree, p1), 'utf8')).toBe('originalA\n')
     expect(await readFile(join(worktree, p2), 'utf8')).toBe('rewoundB\n')
+  })
+
+  it('rolls back the whole prepared transaction after a crash before the second applied row', async () => {
+    const planId = 'plan-crash'
+    const backupDir = join(resolveDryRunRoot(homeDir, planId), '.backup')
+    await mkdir(backupDir, { recursive: true })
+    await writeFile(join(backupDir, 'a.txt'), 'agent a\n')
+    await writeFile(join(backupDir, 'b.txt'), 'agent b\n')
+    await writeFile(join(worktree, 'a.txt'), 'rewound a\n')
+    await writeFile(join(worktree, 'b.txt'), 'rewound b\n')
+    const a: RecoveryFileOperation = { kind: 'restore', path: 'a.txt', expectedCurrentHash: 'a', targetBlobRef: sha('rewound a\n'), afterBlobRef: 'post-a' }
+    const b: RecoveryFileOperation = { kind: 'restore', path: 'b.txt', expectedCurrentHash: 'b', targetBlobRef: sha('rewound b\n'), afterBlobRef: 'post-b' }
+    await appendJournal(homeDir, entry(planId, 1, a, 'prepared'))
+    await appendJournal(homeDir, entry(planId, 2, a, 'applied'))
+    await appendJournal(homeDir, entry(planId, 3, a, 'verified'))
+    await appendJournal(homeDir, entry(planId, 4, b, 'prepared'))
+
+    const rolled = await rollbackUnfinished(planId, worktree, homeDir)
+    expect(rolled.map(item => item.path)).toEqual(['b.txt', 'a.txt'])
+    expect(await readFile(join(worktree, 'a.txt'), 'utf8')).toBe('agent a\n')
+    expect(await readFile(join(worktree, 'b.txt'), 'utf8')).toBe('agent b\n')
+  })
+
+  it('refuses crash rollback when a user edited the file after the interrupted apply', async () => {
+    const planId = 'plan-user-edit'
+    const path = 'a.txt'
+    const backupDir = join(resolveDryRunRoot(homeDir, planId), '.backup')
+    await mkdir(backupDir, { recursive: true })
+    await writeFile(join(backupDir, path), 'agent version\n')
+    await writeFile(join(worktree, path), 'user version\n')
+    await appendJournal(homeDir, entry(planId, 1, {
+      kind: 'restore', path, expectedCurrentHash: 'unused',
+      targetBlobRef: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+      afterBlobRef: 'unused',
+    }, 'prepared'))
+
+    await expect(rollbackUnfinished(planId, worktree, homeDir)).rejects.toThrow(/changed after interrupted apply/)
+    expect(await readFile(join(worktree, path), 'utf8')).toBe('user version\n')
   })
 })

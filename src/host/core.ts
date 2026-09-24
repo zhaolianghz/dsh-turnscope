@@ -24,7 +24,7 @@ import { createFileDiffReader } from './diff/reader.ts'
 import { createTurnInspector } from './inspection/inspector.ts'
 import type { TurnInspector } from './inspection/types.ts'
 import { createQueryService } from './query/service.ts'
-import { createRecoveryService } from './recovery/service.ts'
+import { createRecoveryService, rollbackAllUnfinished } from './recovery/service.ts'
 import type { RecoveryClock } from './recovery/service.ts'
 import { createNodeWorktreeReader } from './storage/worktree-reader.ts'
 import { mountTurnscopeRemoteWhenReady } from './adapters/dsh/remote.ts'
@@ -386,6 +386,17 @@ export async function startTraceCore(
       const repository = createRepository(handle)
       const store = createObjectStore(root)
       const git = createGitPort(createExecFileRunner())
+      const pending = await repository.listUnfinishedRecoveryPlans(Date.now())
+      for (const turnId of new Set(pending.filter(plan => plan.status === 'applying').map(plan => plan.turnId))) {
+        try {
+          await rollbackAllUnfinished(repository, root, [turnId])
+        } catch (error) {
+          diagnostics.record({
+            at: Date.now(), code: 'trace.recovery-rollback-failed',
+            message: `${turnId}: ${describe(error)}`,
+          })
+        }
+      }
       // The real workspace is the repository root, not the working directory:
       // a session started in a subdirectory, or in a linked worktree, must land
       // in the same workspace as every other session on that repository, or
@@ -434,8 +445,9 @@ export async function startTraceCore(
         inspector,
         diffs: createFileDiffReader({ git, store, sink: repository }),
       })
+      let recoverySeq = 0
       const recoveryClock: RecoveryClock = {
-        nextSeq() { return 0 },
+        nextSeq() { return ++recoverySeq },
         nowMs() { return Date.now() },
       }
       const recovery = createRecoveryService({

@@ -2,12 +2,9 @@
  * The apply runner, per
  * `docs/superpowers/specs/2026-09-11-v0.2-v0.3-recovery-design.md §5.5`–§5.7`.
  *
- * The runner is the only component that touches the worktree. It does so
- * with three rules that together form a hard guarantee: either every
- * `restore` and `recreate_deleted_file` op has landed and the result has
- * been verified, or the workspace has been rolled back to its pre-apply
- * state. There is no in-between, because the journal either says "applied"
- * for every op or it does not.
+ * The runner validates every target before writing, journals each operation
+ * before mutation, and restores all prepared paths if an operation fails.
+ * On a crash, startup recovery uses the retained journal and backups.
  *
  * The atomicity comes from `rename`, which is the POSIX renameat(2) call:
  * the kernel guarantees that a successful rename is visible to every
@@ -16,13 +13,13 @@
  *
  * The runner refuses to call git. There is no `git apply`, no
  * `git checkout`, no `git reset --hard`. The plan comes from
- * `stateHash`-guarded evidence, and the runner writes the bytes straight from
+ * state-checked evidence, and the runner writes the bytes straight from
  * the object store; if the user wants a `git` operation they can do one
  * after the apply has returned.
  */
 
-import { mkdir, open, rename, stat, unlink } from 'node:fs/promises'
-import { createHash } from 'node:crypto'
+import { mkdir, open, rename, rm, stat, unlink } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
 import type { ObjectStore } from '../../storage/object-store.ts'
@@ -35,7 +32,7 @@ import type {
   RecoveryPlan,
   RecoveryResult,
 } from '../types.ts'
-import { appendJournal, deleteJournal } from './journal.ts'
+import { appendJournal } from './journal.ts'
 import { resolveDryRunRoot } from './paths.ts'
 
 /** Counter used to give every journal entry a stable, monotonic `seq`. */
@@ -79,9 +76,7 @@ export interface ApplyRunInput {
  * Atomic write: write `bytes` to a temp file in the same directory as
  * `target`, fsync, then rename on top of `target`. The rename is the
  * atomicity primitive — a crash between the write and the rename leaves the
- * old file in place, and a crash between the rename and the directory fsync
- * leaves the new file visible but maybe not durable, which is acceptable for
- * V0.2 (a second apply run after restart would re-write the same bytes).
+ * old file in place. The directory is synced after rename for durability.
  *
  * Same-filesystem constraint: the temp file and the target must live on the
  * same filesystem so `rename` is atomic. V0.2's host always satisfies this
@@ -89,10 +84,17 @@ export interface ApplyRunInput {
  */
 async function atomicWrite(target: string, bytes: Uint8Array): Promise<void> {
   await mkdir(dirname(target), { recursive: true })
-  const tempPath = `${target}.turnscope-${process.pid}-${Date.now().toString(36)}`
-  const fh = await open(tempPath, 'w', 0o600)
+  let previousMode: number | undefined
+  try {
+    previousMode = (await stat(target)).mode & 0o777
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const tempPath = `${target}.turnscope-${process.pid}-${randomUUID()}`
+  const fh = await open(tempPath, 'wx', 0o600)
   try {
     await fh.writeFile(bytes)
+    if (previousMode !== undefined) await fh.chmod(previousMode)
     await fh.sync()
   } finally {
     await fh.close()
@@ -104,166 +106,123 @@ async function atomicWrite(target: string, bytes: Uint8Array): Promise<void> {
     await dirFh.close()
   }
   await rename(tempPath, target)
+  const afterRename = await open(dirname(target), 'r')
+  try {
+    await afterRename.sync()
+  } finally {
+    await afterRename.close()
+  }
 }
 
 /**
  * Run the apply. Every op is journaled at three checkpoints:
  *
+ * - `prepared` after its backup is durable and before mutation.
  * - `applied` once the bytes are on disk in the worktree.
- * - `verified` once the post-apply reverse-apply (using `applyPatch` on the
- *   pre bytes) confirms the file's content hash matches the pre bytes.
+ * - `verified` once the worktree hash matches the intended bytes.
  * - `rolled_back` if verification fails and we restored the original file
  *   from a backup.
  *
- * The journal is the only place a crashed apply is recorded; on next boot
- * the host reads it and surfaces the partial apply to the user.
+ * The service keeps the journal until it has persisted the terminal plan
+ * status, so a crash between runner completion and status update is recoverable.
  */
 export async function runApply(input: ApplyRunInput): Promise<RecoveryResult> {
   const { plan, worktreeRoot, homeDir, objectStore, live, clock } = input
   const journal: RecoveryJournalEntry[] = []
-
-  // Pre-flight: every op that has a target blob must resolve in the object
-  // store before we touch the worktree. A missing blob mid-apply would
-  // leave the workspace half-rewound and the journal honest about it but
-  // the user furious.
-  for (const op of plan.operations) {
-    if (op.kind === 'noop') continue
+  const activeOps = plan.operations.filter(op => op.kind !== 'noop')
+  const result = (status: RecoveryResult['status'], failureReason?: string): RecoveryResult => ({
+    planId: plan.id, status, afterCheckpointId: null, journal,
+    ...(failureReason === undefined ? {} : { failureReason }),
+  })
+  // Validate every target before the first write, including files we intend to
+  // delete. A changed later path must not leave earlier paths half-rewound.
+  for (const op of activeOps) {
     if (op.kind === 'restore' || op.kind === 'recreate_deleted_file') {
-      await objectStore.stat(op.targetBlobRef)
+      if (await objectStore.stat(op.targetBlobRef) === undefined) {
+        throw new Error(`${op.path}: missing recovery blob ${op.targetBlobRef}`)
+      }
+      if (op.kind === 'restore' && await objectStore.stat(op.afterBlobRef) === undefined) {
+        throw new Error(`${op.path}: missing recovery blob ${op.afterBlobRef}`)
+      }
+    }
+    const currentHash = await live.hashCurrent(op.path)
+    const expected = op.kind === 'recreate_deleted_file' ? null : op.expectedCurrentHash
+    if (currentHash !== expected) {
+      return result('rolled_back', `${op.path}: changed since preview`)
     }
   }
 
-  // Track backups per op so rollback has somewhere to read from. Only ops
-  // that touch an existing file need a backup; create-from-blank does not.
-  const backups = new Map<string, { backupPath: string; existedBefore: boolean }>()
-
-  const failures: string[] = []
-  let ranRollback = false
-
-  for (const op of plan.operations) {
-    if (op.kind === 'noop') continue
-
-    if (op.kind === 'delete_created_file') {
+  const backupRoot = join(resolveDryRunRoot(homeDir, plan.id), '.backup')
+  const prepared: Array<{ op: RecoveryFileOperation; original: Uint8Array | null }> = []
+  const record = async (op: RecoveryFileOperation, state: RecoveryJournalState,
+    error?: { code: string; message: string }): Promise<void> => {
+    const entry = makeEntry(plan.id, clock, op, state, error)
+    await appendJournal(homeDir, entry)
+    journal.push(entry)
+  }
+  try {
+    for (const op of activeOps) {
       const target = join(worktreeRoot, op.path)
-      let existed = false
-      try {
-        await stat(target)
-        existed = true
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const original = await live.readCurrent(op.path)
+      const expected = op.kind === 'recreate_deleted_file' ? null : op.expectedCurrentHash
+      if ((original === null ? null : await contentHash(original)) !== expected) {
+        throw new Error(`${op.path}: changed during apply`)
       }
-      if (existed) {
-        await unlink(target)
+      let targetBytes: Uint8Array | undefined
+      if (op.kind === 'restore' || op.kind === 'recreate_deleted_file') {
+        targetBytes = await objectStore.get(op.targetBlobRef)
       }
-      journal.push(makeEntry(plan.id, clock, op, 'applied'))
-      continue
-    }
-
-    const beforeBytes = await objectStore.get(op.targetBlobRef)
-    const target = join(worktreeRoot, op.path)
-
-    // For `restore` ops, run the structural drift guard BEFORE we touch the
-    // worktree. The guard asks "does the worktree still look like the post
-    // state we recorded?" — a `conflict` here means somebody (the user, a
-    // timer, a formatter) has changed the file since the planner snapshot,
-    // and a blind overwrite would lose their work.
-    if (op.kind === 'restore') {
-      const afterBytes = await objectStore.get(op.afterBlobRef)
-      const currentBytes = (await live.readCurrent(op.path)) ?? new Uint8Array()
-      const { reverseText } = reverseDerive({ path: op.path, beforeBytes, afterBytes })
-      if (reverseText.length > 0) {
-        const r = applyPatch({ patch: reverseText, currentBytes, path: op.path })
-        if (r.kind === 'conflict') {
-          journal.push(makeEntry(
-            plan.id,
-            clock,
-            op,
-            'rolled_back',
-            { code: 'PATCH_CONFLICT', message: r.reason },
-          ))
-          failures.push(`${op.path}: ${r.reason}`)
-          ranRollback = true
-          break
+      if (op.kind === 'restore' && targetBytes !== undefined) {
+        const afterBytes = await objectStore.get(op.afterBlobRef)
+        const { reverseText } = reverseDerive({ path: op.path, beforeBytes: targetBytes, afterBytes })
+        if (reverseText.length > 0) {
+          const check = applyPatch({ patch: reverseText, currentBytes: original ?? new Uint8Array(), path: op.path })
+          if (check.kind === 'conflict') {
+            await record(op, 'rolled_back', { code: 'PATCH_CONFLICT', message: check.reason })
+            throw new Error(`${op.path}: ${check.reason}`)
+          }
         }
       }
-    }
-
-    // Back up the current file (if any) before overwriting it. Same
-    // filesystem as the worktree so `rename` is atomic. The backup lives
-    // under `<homeDir>/dryrun/<planId>/.backup/<path>` so a `rm -rf` on
-    // that directory cleans up after a successful apply.
-    const backupRoot = resolveDryRunRoot(homeDir, plan.id)
-    const backupPath = join(backupRoot, '.backup', op.path)
-    await mkdir(dirname(backupPath), { recursive: true })
-    let existedBefore = false
-    try {
-      await stat(target)
-      existedBefore = true
-      await rename(target, backupPath)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    backups.set(op.path, { backupPath, existedBefore })
-
-    await atomicWrite(target, beforeBytes)
-    journal.push(makeEntry(plan.id, clock, op, 'applied'))
-
-    // Verify: hash the file that is now on disk; it must equal the hash of
-    // the bytes we wrote. A mismatch means the kernel wrote something else
-    // (effectively impossible, but cheap to check).
-    const liveHash = await live.hashCurrent(op.path)
-    const expectedHash = await contentHash(beforeBytes)
-    if (liveHash !== expectedHash) {
-      if (existedBefore) {
-        await rename(backupPath, target)
-      } else {
-        await unlink(target).catch(() => undefined)
+      if (original !== null) {
+        const backupPath = join(backupRoot, op.path)
+        await mkdir(dirname(backupPath), { recursive: true })
+        const handle = await open(backupPath, 'wx', 0o600)
+        try {
+          await handle.writeFile(original)
+          await handle.chmod((await stat(target)).mode & 0o777)
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
       }
-      journal.push(makeEntry(
-        plan.id,
-        clock,
-        op,
-        'rolled_back',
-        { code: 'VERIFY_MISMATCH', message: `expected ${expectedHash}, got ${liveHash}` },
-      ))
-      failures.push(`${op.path}: verify mismatch`)
-      ranRollback = true
-      break
+      // The durable prepared row precedes the first mutation. A crash between
+      // the mutation and `applied` still has enough evidence to undo it.
+      await record(op, 'prepared')
+      prepared.push({ op, original })
+      if (op.kind === 'delete_created_file') await unlink(target)
+      else await atomicWrite(target, targetBytes!)
+      await record(op, 'applied')
+      const actual = await live.hashCurrent(op.path)
+      const wanted = targetBytes === undefined ? null : await contentHash(targetBytes)
+      if (actual !== wanted) throw new Error(`${op.path}: verify mismatch`)
+      await record(op, 'verified')
     }
-
-    journal.push(makeEntry(plan.id, clock, op, 'verified'))
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    for (const { op, original } of prepared.reverse()) {
+      const target = join(worktreeRoot, op.path)
+      if (original === null) await unlink(target).catch(e => {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+      })
+      else await atomicWrite(target, original)
+      await record(op, 'rolled_back', { code: 'APPLY_FAILED', message: reason })
+    }
+    await rm(backupRoot, { recursive: true, force: true })
+    return result('rolled_back', reason)
   }
-
-  for (const entry of journal) {
-    await appendJournal(homeDir, entry)
-  }
-
-  // Cleanup: delete the journal if the apply completed cleanly. Per
-  // spec §5.6 we keep the journal around for the rolled-back case so the
-  // host can surface the failure on next boot.
-  if (!ranRollback) {
-    await deleteJournal(homeDir, plan.id).catch(() => undefined)
-  }
-
-  // Drop the backup directory under the staging root.
-  const backupRoot = resolveDryRunRoot(homeDir, plan.id)
-  await unlink(join(backupRoot, '.backup')).catch(() => undefined)
-
-  const status: RecoveryResult['status'] = ranRollback
-    ? 'rolled_back'
-    : failures.length === 0
-      ? 'completed'
-      : 'failed'
-  const result: RecoveryResult = {
-    planId: plan.id,
-    status,
-    afterCheckpointId: null,
-    journal,
-  }
-  if (failures.length > 0) {
-    return { ...result, failureReason: failures.join('; ') }
-  }
-  return result
+  // The service owns finalization: until it durably marks the plan completed,
+  // a crash must still be able to read this journal and restore the backups.
+  return result('completed')
 }
 
 function makeEntry(

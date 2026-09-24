@@ -33,9 +33,11 @@ import type {
 } from '../../../src/host/domain/types.ts'
 import type { TraceRepository } from '../../../src/host/storage/repository.ts'
 import { createNodeWorktreeReader } from '../../../src/host/storage/worktree-reader.ts'
-import { createRecoveryService, type RecoveryDeps, type WorktreeReader } from '../../../src/host/recovery/service.ts'
+import { createRecoveryService, rollbackAllUnfinished, type RecoveryDeps, type WorktreeReader } from '../../../src/host/recovery/service.ts'
 import type { ApplyClock } from '../../../src/host/recovery/runner/apply.ts'
 import type { RecoveryPlan } from '../../../src/host/recovery/types.ts'
+import { appendJournal } from '../../../src/host/recovery/runner/journal.ts'
+import { resolveDryRunRoot } from '../../../src/host/recovery/runner/paths.ts'
 
 const NOW = 1_700_000_000_000
 const TURNOUT = 'turnscope-workspace-1'
@@ -107,7 +109,7 @@ const makeSink = (overrides: { plans?: Map<string, RecoveryPlan>; changes?: File
     getWorkspace: async (workspaceId: string) => workspaces.get(workspaceId),
     listFileChanges: async () => changes,
     listCheckpoints: async () => checkpoints,
-    listCheckpointPaths: async () => checkpointPaths,
+    listCheckpointPaths: async (id: string) => checkpointPaths.filter(path => path.checkpointId === id),
     getLatestVerdict: async () => verdict,
     getRecoveryPlan: async (id: string) => plans.get(id),
     putRecoveryPlan: async (plan: RecoveryPlan) => { plans.set(plan.id, plan) },
@@ -144,10 +146,26 @@ const buildHarness = (opts: {
   baselineBytes?: Buffer
 }): Harness => {
   const baselineBytes = opts.baselineBytes ?? Buffer.from('export const x = 1\n', 'utf8')
+  const afterBytes = Buffer.from(opts.files.read('src/foo.ts'), 'utf8')
+  const checkpoints = opts.checkpoints === undefined ? undefined : [
+    ...opts.checkpoints,
+    ...opts.checkpoints.filter(cp => cp.phase === 'pre').map(cp => ({
+      ...cp, id: `${cp.id}-post`, phase: 'post' as const, createdAt: cp.createdAt + 1,
+    })),
+  ]
+  const checkpointPaths = opts.checkpointPaths === undefined ? undefined : [
+    ...opts.checkpointPaths,
+    ...opts.checkpointPaths.map(cp => ({
+      ...cp, id: `${cp.id}-post`, checkpointId: `${cp.checkpointId}-post`,
+      blobRef: 'after-ref', contentHash: sha(afterBytes),
+    })),
+  ]
   const fakeStore = {
     put: async () => ({ ref: 'before-ref', byteSize: baselineBytes.byteLength, sha256: sha(baselineBytes) }),
-    get: async (ref: string) => ref === 'before-ref' ? baselineBytes : null,
-    stat: async (ref: string) => ref === 'before-ref' ? { kind: 'recovery-blob' as const, ref, bytes: baselineBytes.byteLength, sha256: sha(baselineBytes) } : undefined,
+    get: async (ref: string) => ref === 'before-ref' ? baselineBytes : ref === 'after-ref' ? afterBytes : null,
+    stat: async (ref: string) => ref === 'before-ref' || ref === 'after-ref'
+      ? { kind: 'recovery-blob' as const, ref, bytes: (ref === 'before-ref' ? baselineBytes : afterBytes).byteLength, sha256: sha(ref === 'before-ref' ? baselineBytes : afterBytes) }
+      : undefined,
     has: async () => false,
     listRefs: async () => [],
   } as never
@@ -166,8 +184,8 @@ const buildHarness = (opts: {
   const service = createRecoveryService({
     sink: makeSink({
       changes: opts.changes,
-      ...(opts.checkpoints !== undefined ? { checkpoints: opts.checkpoints } : {}),
-      ...(opts.checkpointPaths !== undefined ? { checkpointPaths: opts.checkpointPaths } : {}),
+      ...(checkpoints !== undefined ? { checkpoints } : {}),
+      ...(checkpointPaths !== undefined ? { checkpointPaths } : {}),
       verdict: opts.verdict,
       repoRoot: opts.repoRoot,
     }),
@@ -237,6 +255,35 @@ describe('RecoveryService end-to-end flow', () => {
   afterEach(() => {
     rmSync(workdir, { recursive: true, force: true })
     rmSync(homeDir, { recursive: true, force: true })
+  })
+
+  it('marks an interrupted apply rolled back after restoring its backup', async () => {
+    const planId = 'interrupted-plan'
+    const path = 'src/foo.ts'
+    const original = 'agent version\n'
+    const rewound = 'rewound version\n'
+    files.write(path, rewound)
+    const backupRoot = join(resolveDryRunRoot(homeDir, planId), '.backup', 'src')
+    mkdirSync(backupRoot, { recursive: true })
+    writeFileSync(join(backupRoot, 'foo.ts'), original)
+    const op = { kind: 'restore' as const, path, expectedCurrentHash: sha(original), targetBlobRef: sha(rewound), afterBlobRef: sha(original) }
+    const plan: RecoveryPlan = {
+      schemaVersion: SCHEMA_VERSION, id: planId, turnId: TURN_ID,
+      verdict: buildSafeVerdict(), evaluationId: 'e1', stateHash: sha('state'),
+      operations: [op], beforeCheckpointId: 'cp-pre', status: 'applying',
+      createdAt: NOW, expiresAt: NOW + 60_000,
+    }
+    const plans = new Map([[planId, plan]])
+    const sink = makeSink({ plans, repoRoot: workdir })
+    await appendJournal(homeDir, {
+      schemaVersion: SCHEMA_VERSION, planId, seq: 1, operation: op,
+      state: 'prepared', occurredAt: NOW,
+    })
+
+    await rollbackAllUnfinished(sink, homeDir, [TURN_ID])
+
+    expect(files.read(path)).toBe(original)
+    expect(plans.get(planId)?.status).toBe('rolled_back')
   })
 
   it('preview: persists a plan with status=previewed and does not write the worktree', async () => {

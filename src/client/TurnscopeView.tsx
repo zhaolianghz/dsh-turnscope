@@ -1,5 +1,5 @@
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { ChatSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { EMPTY_CHAT } from './chat-empty.ts'

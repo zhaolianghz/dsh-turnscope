@@ -1,9 +1,9 @@
-import type { ChatSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
 
 /**
  * The minimal empty `ChatSnapshot` the renderer uses as a first-frame fallback.
  *
- * DSH ships `EMPTY_CHAT_SNAPSHOT` from `@deepseek-ai/dsh-client-runtime/client`,
+ * DSH ships `EMPTY_CHAT_SNAPSHOT` from `@deepseek-ai/dsh-client-ui-chat/client`,
  * but importing it pulls the runtime's `client.js` into the renderer bundle,
  * which references `window` at module load and crashes any non-browser test.
  *
@@ -26,6 +26,7 @@ export const EMPTY_CHAT: ChatSnapshot = {
     getTurn: () => [],
     getStep: () => [],
   },
+  navigation: { items: () => [] },
   timeline: { turnOrder: [], turns: new Map() },
   legacy: {
     nodes: [],

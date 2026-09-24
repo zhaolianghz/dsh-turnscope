@@ -36,9 +36,11 @@ import { rollbackUnfinished } from './runner/rollback.ts'
 import { OBJECT_KINDS } from '../storage/object-store.ts'
 import type { GitPort } from '../git/git-port.ts'
 import { captureCheckpoint } from '../git/checkpoint.ts'
-import { resolveRecoveryRoot, resolveDryRunRoot } from './runner/paths.ts'
-import { runDryRun } from './runner/dryrun.ts'
+import { cleanupDryRun, runDryRun } from './runner/dryrun.ts'
+import { deleteJournal } from './runner/journal.ts'
+import { resolveDryRunRoot } from './runner/paths.ts'
 import { runApply, type ApplyClock, type ApplyLiveContext } from './runner/apply.ts'
+import { computeStateHash } from './hash.ts'
 import type { ObjectStore } from '../storage/object-store.ts'
 import type { RecoveryPlan, RecoveryPlanStatus, RecoveryResult } from './types.ts'
 import type { TraceRepository } from '../storage/repository.ts'
@@ -138,9 +140,8 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
    * Pull a turn, its workspace, its file changes, and the before-checkpoint
    * paths into the shape the planner needs.
    *
-   * The four reads are independent, so they are issued together rather than
-   * awaited in sequence: a refresh on the inspector page has to round-trip
-   * the four tables and four round trips of latency are visible where one is.
+   * The checkpoint path reads are independent and run together once the
+   * pre/post checkpoint ids have been found.
    */
   const collectPlannerInputs = async (turnId: string) => {
     const turn = await sink.getTurn(turnId)
@@ -149,10 +150,14 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
     if (workspace === undefined) return undefined
     const fileChanges = await sink.listFileChanges(turnId)
     const checkpoints = await sink.listCheckpoints(turnId)
-    const first = checkpoints[0]
-    if (first === undefined) return undefined
-    const checkpointPaths = await sink.listCheckpointPaths(first.id)
-    return { turn, workspace, fileChanges, checkpointPaths, beforeCheckpointId: first.id }
+    const pre = checkpoints.find(checkpoint => checkpoint.phase === 'pre')
+    const post = checkpoints.find(checkpoint => checkpoint.phase === 'post')
+    if (pre === undefined || post === undefined) return undefined
+    const [checkpointPaths, postCheckpointPaths] = await Promise.all([
+      sink.listCheckpointPaths(pre.id),
+      sink.listCheckpointPaths(post.id),
+    ])
+    return { turn, workspace, fileChanges, checkpointPaths, postCheckpointPaths, pre, beforeCheckpointId: pre.id }
   }
 
   /**
@@ -167,22 +172,22 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
     paths: readonly string[],
     workspace: WorkspaceRecord,
     checkpointPathsByPath: ReadonlyMap<string, CheckpointPathState>,
+    postPathsByPath: ReadonlyMap<string, CheckpointPathState>,
     headRef: string,
   ): Promise<readonly PlannerPathSnapshot[]> => {
     return Promise.all(
       paths.map(async path => {
-        const existsNow = (await worktree.hashCurrent(workspace.repoRoot, path)) !== undefined
-        const currentContentHash = existsNow
-          ? await worktree.hashCurrent(workspace.repoRoot, path)
-          : undefined
+        const currentContentHash = await worktree.hashCurrent(workspace.repoRoot, path)
+        const existsNow = currentContentHash !== undefined
         const cp = checkpointPathsByPath.get(path)
-        // The `before` side of a diff is the bytes the file had at HEAD before
-        // the turn opened. Captured from git so the rewind has something to put
-        // back, then stored through the object store so the planner's
-        // `beforeBlobRef` is a ref the runner can actually resolve.
-        const headBytes = await git.blobAt(workspace.repoRoot, headRef, path)
-        let beforeBlobRef: string | undefined
-        if (headBytes !== undefined) {
+        // Prefer the pre-turn snapshot: HEAD would discard a user's uncommitted
+        // changes from before the turn. A clean path has no pre blob, so its
+        // pre-turn HEAD oid supplies the bytes instead.
+        const headBytes = cp?.blobRef === undefined
+          ? await git.blobAt(workspace.repoRoot, headRef, path)
+          : undefined
+        let beforeBlobRef = cp?.blobRef
+        if (headBytes !== undefined && beforeBlobRef === undefined) {
           const stored = await store.put(OBJECT_KINDS.RECOVERY_BLOB, headBytes, {
             redaction: 'raw-bytes',
           })
@@ -201,8 +206,8 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
           staged: false,
           currentContentHash,
           beforeBlobRef,
-          afterBlobRef: cp?.blobRef,
-          existedBefore: existsNow,
+          afterBlobRef: postPathsByPath.get(path)?.blobRef,
+          existedBefore: beforeBlobRef !== undefined,
           existsNow,
         }
       }),
@@ -231,7 +236,7 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         const data: PreviewRewindData = { failureReason: 'turn or workspace not found, or turn has no checkpoints' }
         return envelope<PreviewRewindData>(data)
       }
-      const { turn, workspace, fileChanges, checkpointPaths, beforeCheckpointId } = inputs
+      const { turn, workspace, fileChanges, checkpointPaths, postCheckpointPaths, pre, beforeCheckpointId } = inputs
       const verdictOrError = await loadVerdictOrFail(sink, turn)
       if (!('level' in verdictOrError)) {
         const data: PreviewRewindData = { failureReason: verdictOrError.message }
@@ -239,11 +244,12 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
       }
       const verdict: SafetyVerdict = verdictOrError
       const head = await git.head(workspace.repoRoot)
-      const headRef = head?.oid ?? 'HEAD'
+      const headRef = pre.headOid ?? 'HEAD'
       const pathSet = new Set(fileChanges.map(c => c.path))
       for (const cp of checkpointPaths) pathSet.add(cp.path)
       const checkpointPathsByPath = new Map(checkpointPaths.map(cp => [cp.path, cp]))
-      const paths = await snapshotPaths([...pathSet], workspace, checkpointPathsByPath, headRef)
+      const postPathsByPath = new Map(postCheckpointPaths.map(cp => [cp.path, cp]))
+      const paths = await snapshotPaths([...pathSet], workspace, checkpointPathsByPath, postPathsByPath, headRef)
 
       const plan = planRecovery({
         turnId: turn.id,
@@ -296,6 +302,9 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
         const data: ApplyRewindData = { failureReason: `plan ${request.planId} not found` }
         return envelope(data)
       }
+      if (stored.status !== 'previewed') {
+        return envelope<ApplyRewindData>({ failureReason: `plan is ${stored.status}, not previewed` })
+      }
       // Refuse to apply a plan whose preview window has elapsed: the user
       // had `ttlMs` to confirm, after which the live workspace may have
       // moved on (spec §5.6).
@@ -308,6 +317,26 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
       if (workspace === undefined) {
         const data: ApplyRewindData = { failureReason: 'workspace no longer exists' }
         return envelope(data)
+      }
+      const head = await git.head(workspace.repoRoot)
+      const relevantPaths = await Promise.all(stored.operations
+        .filter(op => op.kind !== 'noop')
+        .map(async op => ({
+          path: op.path,
+          contentHash: await worktree.hashCurrent(workspace.repoRoot, op.path),
+          staged: false,
+        })))
+      const liveStateHash = computeStateHash({
+        workspaceId: workspace.id,
+        git: {
+          headOid: head?.oid ?? 'pending',
+          branch: head?.branch ?? 'detached',
+          worktreePath: workspace.repoRoot,
+        },
+        relevantPaths,
+      })
+      if (liveStateHash !== stored.stateHash) {
+        return envelope<ApplyRewindData>({ failureReason: 'workspace changed since preview' })
       }
       const plan: RecoveryPlan = { ...stored, status: 'applying' }
       delete (plan as { completedAt?: number }).completedAt
@@ -348,6 +377,10 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
 
       const finalStatus: RecoveryPlanStatus = result.status
       await sink.updateRecoveryPlanStatus(plan.id, finalStatus)
+      if (finalStatus === 'completed') {
+        await deleteJournal(homeDir, plan.id).catch(() => undefined)
+        await cleanupDryRun(resolveDryRunRoot(homeDir, plan.id))
+      }
       const data: ApplyRewindData = {
         result,
         ...(result.status === 'completed' ? {} : { failureReason: result.failureReason ?? 'apply failed' }),
@@ -366,38 +399,30 @@ export function createRecoveryService(deps: RecoveryDeps): RecoveryService {
 }
 
 /**
- * One round-trip into the recovery root: list plan ids whose journal exists,
- * and run the rollback walker for each. Used by the boot-time probe; not on
- * the client-facing API yet (`docs/PRD.md` keeps the rollback user-triggered
- * in V0.2). Pulled out so the same logic is reusable from a future CLI.
+ * At startup, restore each interrupted apply and mark its plan rolled back.
+ * A changed file makes the walker throw and keeps the plan `applying`, so
+ * startup never overwrites post-crash user edits.
  */
 export async function rollbackAllUnfinished(
   sink: RecoverySink,
-  worktree: WorktreeReader,
   homeDir: string,
   turnIds: readonly string[],
 ): Promise<readonly { planId: string; path: string; seq: number }[]> {
-  const recoveryRoot = resolveRecoveryRoot(homeDir)
   const results: { planId: string; path: string; seq: number }[] = []
   for (const turnId of turnIds) {
     const plans = await sink.listRecoveryPlans(turnId)
     for (const plan of plans) {
-    if (plan.status !== 'applying') continue
-    const turn = await sink.getTurn(plan.turnId)
-    if (turn === undefined) continue
-    const workspace = await sink.getWorkspace(turn.workspaceId)
-    if (workspace === undefined) continue
-    const out = await rollbackUnfinished(plan.id, workspace.repoRoot, homeDir)
-    for (const entry of out) results.push(entry)
-  }
+      if (plan.status !== 'applying') continue
+      const turn = await sink.getTurn(plan.turnId)
+      if (turn === undefined) continue
+      const workspace = await sink.getWorkspace(turn.workspaceId)
+      if (workspace === undefined) continue
+      const out = await rollbackUnfinished(plan.id, workspace.repoRoot, homeDir)
+      for (const entry of out) results.push(entry)
+      await sink.updateRecoveryPlanStatus(plan.id, 'rolled_back')
+    }
   }
   return results
-  // `recoveryRoot` and `worktree` are referenced so the helper is in scope
-  // for future expansion; the import is intentionally kept on the same line
-  // as its first caller to make the boot-time surface obvious.
-  void recoveryRoot
-  void worktree
-  void resolveDryRunRoot
 }
 
 // ---------------------------------------------------------------------------

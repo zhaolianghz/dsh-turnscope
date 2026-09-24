@@ -4,7 +4,7 @@
 
 `dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 patches refine renderer behavior (see Changelog below).
 
-> Status: **V0.1.5 published** (`@zhaolianghz/dsh-turnscope@0.1.5`) for DSH `0.1.6-alpha.1` (the plugin's bundled client code consumes the runtime types shipped in `0.1.1-rc.2`, which are forward-compatible with the actual `ChatSnapshot` shape `0.1.6-alpha.1` exposes via the `useChat` hook). V0.2 (preview-first safe rewind) is shipping in the same build; the API_VERSION is `4` (since 0.1.1). The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 patches refine renderer behavior without bumping `API_VERSION`. Forked retries remain planned for V0.3.
+> Status: **V0.1.5 source checkout** verified with DSH `0.1.7-rc.1`. This checkout is marked `private` in `package.json`; use the local installation steps below. The client uses DSH's current Chat, Conversation, and Renderer packages. The API_VERSION is `4`; forked retries remain planned for V0.3.
 
 ## Changelog
 
@@ -86,7 +86,7 @@ Turnscope will never run `git reset --hard`, rewrite the user's branch, or silen
 
 - Node.js 22.19 or newer
 - pnpm 11.7
-- A local DSH `0.1.6-alpha.1` installation (the plugin's bundled client code consumes the runtime types shipped in `0.1.1-rc.2`, which are forward-compatible with the `ChatSnapshot` shape `0.1.6-alpha.1` exposes via the `useChat` hook)
+- DSH `0.1.7-rc.1` for local loading; the development install pins that version for smoke checks
 
 ## Develop
 
@@ -96,13 +96,19 @@ pnpm install
 pnpm build
 pnpm test
 pnpm typecheck
+pnpm smoke:dsh
+pnpm smoke:browser
+pnpm check:profile
 ```
 
 The build emits the host entry, the browser handoff bundle expected by DSH's `window.__ModuleLoader__`, and TypeScript declarations under `lib/`.
+`smoke:dsh` uses the pinned DSH executable. It installs the checkout into a temporary DSH home, starts Web on an ephemeral port, checks the boot manifest, browser bundle, and a real host API call, then removes the temporary home.
+`smoke:browser` additionally opens a real Chrome session and checks the host RPC, translated Turns tab, and rendered panel. It requires Chrome; the script uses the pinned DSH Web dependencies.
+`check:profile` rebuilds the plugin, then checks that the active DSH Web profile links to this checkout. Set `DSH_HOME` or `DSH_PROFILE` when using a non-default profile.
 
 ## Load in local DSH
 
-Build Turnscope first. From a local DSH `0.1.6-alpha.1` source checkout, add it as a development dependency of the `web` profile:
+Build Turnscope first. From a local DSH `0.1.7-rc.1` source checkout, add it as a development dependency of the `web` profile:
 
 ```sh
 cd /path/to/deepseek-harness
@@ -120,13 +126,10 @@ the bundle layer (rare; documented for completeness):
 pnpm dsh --profile web
 ```
 
-Verified on `0.1.6-alpha.1`: the home page serves with turnscope in the
-boot manifest (`/plugins/@zhaolianghz/dsh-turnscope/client.js`), and
-the client bundle exports `previewRewind`, `listTurns`,
-`RecoverySection`, and the other DTOs.
+Verified on `0.1.7-rc.1`: the home page includes Turnscope in the boot manifest, the host API answers, and a real browser displays the **Turns / 轮次** tab and panel.
 
 
-Open a session and select the **Turns / 轮次** conversation tab. Because this package is not published yet, there is intentionally no npm installation command.
+Open a session and select the **Turns / 轮次** conversation tab. The package remains marked `private` in this checkout, so the documented setup uses a local source path.
 
 ## Project documentation
 

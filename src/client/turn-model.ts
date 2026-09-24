@@ -1,4 +1,4 @@
-import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 
 export type TurnStatus = 'running' | 'completed' | 'failed' | 'max-tokens'
 

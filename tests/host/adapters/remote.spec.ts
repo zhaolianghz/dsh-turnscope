@@ -14,10 +14,9 @@
  * - **The request path is a pass-through.** The `src-json` codec validates
  *   nothing, so `apiVersion` and the field shapes are checked by our adapter or
  *   by nobody. Without these tests that check is a comment.
- * - **A reply must be JSON-representable**, and the gateway is strict about it:
- *   an own property whose value is `undefined` makes it reject the whole result
- *   as a boundary failure. That is why a lookup replies `data: null` rather than
- *   omitting the field, and it is a rule that is invisible until it is hit.
+ * - **A lookup must carry explicit absence.** The current gateway can pass an
+ *   `undefined` data property in-process, but JSON transport drops that field.
+ *   Our client then rejects the incomplete answer, so lookups send `null`.
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type { RecoveryService } from '../../../src/host/recovery/service.ts'
@@ -30,7 +29,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { API_VERSION, REMOTE_NAMESPACE } from '../../../src/shared/contracts/api.ts'
+import { API_VERSION, REMOTE_NAMESPACE, readReply } from '../../../src/shared/contracts/api.ts'
 import { Diagnostics } from '../../../src/diagnostics.ts'
 import {
   TURNSCOPE_INVOCATIONS,
@@ -456,12 +455,9 @@ describe('the Remote face', () => {
     expect(cursor.ok).toBe(false)
   })
 
-  it('shows why a lookup answers `null`, by observing what the boundary does to `undefined`', async () => {
-    // The contract's `data: null` rests on a claim about the gateway. Rather
-    // than assert that claim in a comment, this registers a service that breaks
-    // it and watches the boundary reject the reply. If a future gateway stops
-    // refusing `undefined`, this test fails and the `null` in `lookup` becomes a
-    // style choice that nobody re-examined.
+  it('shows why a lookup answers `null` across JSON transport', async () => {
+    // The gateway accepts an undefined field in-process; the JSON wire drops it.
+    // The client must reject that incomplete reply rather than report absence.
     const dataRoot = await mkdtemp(join(tmpdir(), 'turnscope-remote-probe-'))
     cleanups.push(async () => rm(dataRoot, { recursive: true, force: true }))
     const handle = await openIndex(join(dataRoot, 'index.sqlite3'))
@@ -521,8 +517,9 @@ describe('the Remote face', () => {
       new AbortController().signal,
     )) as DispatchResult
 
-    expect(result.ok).toBe(false)
-    expect(result.error?.message).toContain('boundary validation')
+    expect(result.ok).toBe(true)
+    const wire = JSON.parse(JSON.stringify(result.value))
+    expect(readReply(wire)).toEqual({ kind: 'unusable', detail: 'the host reply carries no data' })
   })
 
   it('waits for the gateway instead of giving up when it arrives late', async () => {

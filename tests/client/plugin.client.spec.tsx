@@ -16,11 +16,15 @@ function loadRuntime(): Promise<RuntimeExports> {
     ;(window as unknown as { __ModuleLoader__: { load(handoff: { factory: typeof factory }): void } }).__ModuleLoader__ = {
       load: handoff => { factory = handoff.factory },
     }
-    await import('@deepseek-ai/dsh-client-runtime/client')
-    if (factory === undefined) throw new Error('runtime client bundle did not hand off')
+    await import('@deepseek-ai/dsh-client-ui-renderer/client')
+    if (factory === undefined) throw new Error('renderer client bundle did not hand off')
     const modules = new Map<string, unknown>([
       ['@deepseek-ai/cordis', await import('@deepseek-ai/cordis')],
       ['@deepseek-ai/dsh-client-ui-slots', await import('@deepseek-ai/dsh-client-ui-slots')],
+      ['react', await import('react')],
+      ['react-dom', await import('react-dom')],
+      ['react-dom/client', await import('react-dom/client')],
+      ['react/jsx-runtime', await import('react/jsx-runtime')],
     ])
     return factory(specifier => {
       if (!modules.has(specifier)) throw new Error(`unexpected runtime require: ${specifier}`)

@@ -62,6 +62,8 @@ RECOVER
 
 # 3. 当前仓库状态与迁移方向
 
+> 以下状态记录的是 2026-09-10 的设计基线。当前开发依赖及 Web 集成已在 DSH `0.1.7-rc.1` 上验证；以 `package.json` 和 README 的兼容说明为准。
+
 当前仓库已经具备：
 
 - DSH native `conversation.view`；
@@ -2029,7 +2031,8 @@ README 自动维护：
 
 | Turnscope | DSH | Status |
 |---|---|---|
-| dev | 0.1.1-rc.2 | legacy development baseline |
+| dev | 0.1.7-rc.1 | verified: tests, typecheck, Web host and browser smoke |
+| historical baseline | 0.1.1-rc.2 | design-time reference |
 | v0.1.x | release-time verified version(s) | verified |
 | other | unknown | not claimed |
 

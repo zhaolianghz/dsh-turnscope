@@ -10,13 +10,15 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { runApply, type ApplyClock } from '../../../../src/host/recovery/runner/apply.ts'
+import { readJournal } from '../../../../src/host/recovery/runner/journal.ts'
+import { resolveDryRunRoot } from '../../../../src/host/recovery/runner/paths.ts'
 import { planRecovery, type PlannerPathSnapshot } from '../../../../src/host/recovery/planner.ts'
 import type { FileChange, SafetyVerdict } from '../../../../src/host/domain/types.ts'
 import type { ObjectRef, ObjectStore } from '../../../../src/host/storage/object-store.ts'
@@ -159,6 +161,33 @@ describe('runApply', () => {
     const states = result.journal.map(e => e.state)
     expect(states).toContain('applied')
     expect(states).toContain('verified')
+    expect((await readJournal(homeDir, plan.id)).map(entry => entry.state)).toContain('prepared')
+  })
+
+  it('keeps executable permissions when restoring a modified file', async () => {
+    const before = enc.encode('#!/bin/sh\necho old\n')
+    const after = enc.encode('#!/bin/sh\necho new\n')
+    const beforeRef = sha(before)
+    const afterRef = sha(after)
+    await writeFile(join(worktree, 'run.sh'), after)
+    await chmod(join(worktree, 'run.sh'), 0o755)
+    const plan = planRecovery({
+      turnId: 't1', evaluationId: 'e1', verdict: makeVerdict(), workspaceId: 'w1',
+      git: { headOid: 'h', branch: 'main', worktreePath: worktree },
+      paths: [{ path: 'run.sh', staged: false, currentContentHash: afterRef,
+        beforeBlobRef: beforeRef, afterBlobRef: afterRef, existedBefore: true, existsNow: true }],
+      fileChanges: [makeChange({ path: 'run.sh', kind: 'modified' })],
+      checkpointPathStates: [], beforeCheckpointId: 'cp_pre', nowMs: NOW,
+    })
+    const live = {
+      async hashCurrent(path: string): Promise<string | null> { return sha(await readFile(join(worktree, path))) },
+      async readCurrent(path: string): Promise<Uint8Array | null> { return readFile(join(worktree, path)) },
+    }
+    const result = await runApply({ plan, worktreeRoot: worktree, homeDir,
+      objectStore: stubStore({ [beforeRef]: before, [afterRef]: after }), live, clock: makeClock() })
+    expect(result.status).toBe('completed')
+    expect((await stat(join(worktree, 'run.sh'))).mode & 0o777).toBe(0o755)
+    expect((await stat(join(resolveDryRunRoot(homeDir, plan.id), '.backup', 'run.sh'))).mode & 0o777).toBe(0o755)
   })
 
   it('restores a deleted file from beforeBytes', async () => {
@@ -233,8 +262,12 @@ describe('runApply', () => {
       nowMs: NOW,
     })
     const live = {
-      async hashCurrent(): Promise<string | null> { return null },
-      async readCurrent(): Promise<Uint8Array | null> { return null },
+      async hashCurrent(path: string): Promise<string | null> {
+        try { return sha(await readFile(join(worktree, path))) } catch { return null }
+      },
+      async readCurrent(path: string): Promise<Uint8Array | null> {
+        try { return await readFile(join(worktree, path)) } catch { return null }
+      },
     }
     const result = await runApply({ plan, worktreeRoot: worktree, homeDir, objectStore: store, live, clock: makeClock() })
     expect(result.status).toBe('completed')
@@ -321,5 +354,72 @@ describe('runApply', () => {
     }
     await runApply({ plan, worktreeRoot: worktree, homeDir, objectStore: store, live, clock: makeClock() })
     expect(await readFile(join(worktree, 'sub', 'readme.md'), 'utf8')).toBe('pre-existing\n')
+  })
+
+  it('restores every previously changed file when a later write fails verification', async () => {
+    const before = enc.encode('before\n')
+    const after = enc.encode('after\n')
+    const beforeRef = sha(before)
+    const afterRef = sha(after)
+    await writeFile(join(worktree, 'a.txt'), after)
+    await writeFile(join(worktree, 'b.txt'), after)
+    const paths: PlannerPathSnapshot[] = ['a.txt', 'b.txt'].map(path => ({
+      path, staged: false, currentContentHash: afterRef,
+      beforeBlobRef: beforeRef, afterBlobRef: afterRef,
+      existedBefore: true, existsNow: true,
+    }))
+    const plan = planRecovery({
+      turnId: 't1', evaluationId: 'e1', verdict: makeVerdict(), workspaceId: 'w1',
+      git: { headOid: 'h', branch: 'main', worktreePath: worktree },
+      paths,
+      fileChanges: paths.map(({ path }) => makeChange({ path, kind: 'modified' })),
+      checkpointPathStates: [], beforeCheckpointId: 'cp_pre', nowMs: NOW,
+    })
+    const live = {
+      async hashCurrent(path: string): Promise<string | null> {
+        const actual = sha(await readFile(join(worktree, path)))
+        return path === 'b.txt' && actual === beforeRef ? 'sha256:corrupt' : actual
+      },
+      async readCurrent(path: string): Promise<Uint8Array | null> {
+        return readFile(join(worktree, path))
+      },
+    }
+    const result = await runApply({
+      plan, worktreeRoot: worktree, homeDir,
+      objectStore: stubStore({ [beforeRef]: before, [afterRef]: after }),
+      live, clock: makeClock(),
+    })
+    expect(result.status).toBe('rolled_back')
+    expect(await readFile(join(worktree, 'a.txt'), 'utf8')).toBe('after\n')
+    expect(await readFile(join(worktree, 'b.txt'), 'utf8')).toBe('after\n')
+  })
+
+  it('rejects a missing later recovery blob before changing the first file', async () => {
+    const before = enc.encode('before\n')
+    const after = enc.encode('after\n')
+    const beforeRef = sha(before)
+    const afterRef = sha(after)
+    await writeFile(join(worktree, 'a.txt'), after)
+    await writeFile(join(worktree, 'b.txt'), after)
+    const paths: PlannerPathSnapshot[] = ['a.txt', 'b.txt'].map(path => ({
+      path, staged: false, currentContentHash: afterRef,
+      beforeBlobRef: path === 'a.txt' ? beforeRef : 'sha256:' + '0'.repeat(64),
+      afterBlobRef: afterRef, existedBefore: true, existsNow: true,
+    }))
+    const plan = planRecovery({
+      turnId: 't1', evaluationId: 'e1', verdict: makeVerdict(), workspaceId: 'w1',
+      git: { headOid: 'h', branch: 'main', worktreePath: worktree }, paths,
+      fileChanges: paths.map(({ path }) => makeChange({ path, kind: 'modified' })),
+      checkpointPathStates: [], beforeCheckpointId: 'cp_pre', nowMs: NOW,
+    })
+    const live = {
+      async hashCurrent(path: string): Promise<string | null> { return sha(await readFile(join(worktree, path))) },
+      async readCurrent(path: string): Promise<Uint8Array | null> { return readFile(join(worktree, path)) },
+    }
+    await expect(runApply({ plan, worktreeRoot: worktree, homeDir,
+      objectStore: stubStore({ [beforeRef]: before, [afterRef]: after }), live, clock: makeClock() }))
+      .rejects.toThrow(/missing recovery blob/)
+    expect(await readFile(join(worktree, 'a.txt'), 'utf8')).toBe('after\n')
+    expect(await readJournal(homeDir, plan.id)).toEqual([])
   })
 })

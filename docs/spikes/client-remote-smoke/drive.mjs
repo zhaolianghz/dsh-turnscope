@@ -105,19 +105,36 @@ for (const label of ['继续', '新建会话']) {
   console.log(await clickByText(label))
   await settle(3000)
 }
+console.log(await clickByText('稍后配置'))
+await settle(1000)
 
-console.log(
-  await evaluate(`(() => {
+const composer = await evaluate(`(() => {
+  const box = document.querySelector('[contenteditable="true"][role="textbox"],textarea')
+  if (box === null) return 'no composer'
+  box.focus()
+  return box.tagName
+})()`)
+if (composer === 'no composer') {
+  console.log('--- session screen ---')
+  console.log(await evaluate(`JSON.stringify({
+    text: document.body.innerText.slice(0, 1200),
+    inputs: [...document.querySelectorAll('textarea,input,[contenteditable]')].map(n => ({tag:n.tagName,placeholder:n.getAttribute('placeholder'),role:n.getAttribute('role')})),
+    buttons: [...document.querySelectorAll('button')].map(n => (n.getAttribute('aria-label') ?? n.textContent ?? '').trim()).filter(Boolean).slice(0, 40)
+  })`))
+}
+if (composer === 'DIV') {
+  await send('Input.insertText', { text: 'a prompt that only has to be attempted' })
+  console.log('typed into the composer')
+} else {
+  console.log(await evaluate(`(() => {
     const box = document.querySelector('textarea')
     if (box === null) return 'no composer'
-    // React owns the value, so the native setter plus an input event is what it
-    // listens to; a plain assignment is not observed.
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
       .call(box, 'a prompt that only has to be attempted')
     box.dispatchEvent(new Event('input', { bubbles: true }))
     return 'typed into the composer'
-  })()`),
-)
+  })()`))
+}
 await settle(1000)
 console.log(await clickByText('发送消息'))
 await settle(6000)

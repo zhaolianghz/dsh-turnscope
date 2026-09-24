@@ -1,4 +1,4 @@
-import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { describe, expect, it } from 'vitest'
 import { deriveTurnModels } from '../../src/client/turn-model.ts'
 import { chatSnapshot, node } from './support.ts'

@@ -6,7 +6,7 @@
  * conversation snapshot and a host answer — and three copies of "what a host row
  * looks like" is three places to update when the contract grows a field.
  */
-import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ChatSnapshot, ConversationNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { vi } from 'vitest'
 import { createTurnscopeView, type TurnscopeView } from '../../src/client/TurnscopeView.tsx'
 import type { TurnscopeHostApi } from '../../src/client/host-api.ts'
@@ -56,6 +56,7 @@ export const chatSnapshot = (overrides: {
       getTurn: () => [],
       getStep: () => [],
     },
+    navigation: { items: () => [] },
     timeline: { turnOrder: [], turns: new Map() },
     legacy,
   }

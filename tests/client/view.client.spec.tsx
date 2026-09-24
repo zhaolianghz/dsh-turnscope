@@ -244,6 +244,40 @@ describe('TurnscopeView', () => {
 })
 
 describe('createTurnscopeView', () => {
+  it('loads later host pages so older cards retain their safety verdicts', async () => {
+    const { host, listTurns } = hostDouble()
+    listTurns.mockResolvedValueOnce({ kind: 'value', value: {
+      turns: [row(2)], nextCursor: 2,
+    } })
+    listTurns.mockResolvedValueOnce({ kind: 'value', value: {
+      turns: [row(1, { safety: verdict('FORK_ONLY') })],
+    } })
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }], [2, { startTime: 200, endTime: 230 }]]),
+    }))} />)
+
+    await waitFor(() => expect(card(view, 1).textContent).toContain('仅可分叉'))
+    expect(listTurns).toHaveBeenNthCalledWith(2, {
+      apiVersion: API_VERSION, sessionId: 's-1', limit: 30, cursor: 2,
+    })
+  })
+
+  it('shows the newest page while an older page is still loading', async () => {
+    const { host, listTurns } = hostDouble()
+    listTurns.mockResolvedValueOnce({ kind: 'value', value: {
+      turns: [row(2, { safety: verdict('SAFE') })], nextCursor: 2,
+    } })
+    listTurns.mockImplementationOnce(() => new Promise(() => undefined))
+    const View = createTurnscopeView(host)
+    const view = render(<View {...connectedProps(snapshot({
+      turnTimings: new Map([[1, { startTime: 100, endTime: 130 }], [2, { startTime: 200, endTime: 230 }]]),
+    }))} />)
+
+    await waitFor(() => expect(card(view, 2).querySelector('.turnscope-safety')?.getAttribute('data-level')).toBe('SAFE'))
+    expect(listTurns).toHaveBeenCalledTimes(2)
+  })
+
   it('asks the host about the session the panel is showing', async () => {
     const { host, listTurns } = hostDouble({
       kind: 'value',
