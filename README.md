@@ -4,7 +4,7 @@
 
 `dsh-turnscope` is a DeepSeek Harness plugin for developers who use agents to change code. The 0.1.0 release ships a native, read-only turn timeline with per-file diffs and deterministic warnings, plus preview-first safe rewind (the `Preview / Apply` buttons in the turns panel). Forked retries remain planned for V0.3. The 0.1.1 / 0.1.2 / 0.1.3 / 0.1.4 / 0.1.5 patches refine renderer behavior (see Changelog below).
 
-> Status: **V0.1.5 source checkout** verified with DSH `0.1.7-rc.1`. This checkout is marked `private` in `package.json`; use the local installation steps below. The client uses DSH's current Chat, Conversation, and Renderer packages. The API_VERSION is `4`; forked retries remain planned for V0.3.
+> Status: **V0.1.5 source checkout** verified with DSH `0.2.0-rc.2`. This checkout is marked `private` in `package.json`; use the local installation steps below. The client uses DSH's current Chat, Conversation, and Renderer packages. The API_VERSION is `4`; forked retries remain planned for V0.3.
 
 ## Changelog
 
@@ -86,7 +86,7 @@ Turnscope will never run `git reset --hard`, rewrite the user's branch, or silen
 
 - Node.js 22.19 or newer
 - pnpm 11.7
-- DSH `0.1.7-rc.1` for local loading; the development install pins that version for smoke checks
+- DSH `0.2.0-rc.2` for local loading; the development install pins that version for smoke checks
 
 ## Develop
 
@@ -108,7 +108,7 @@ The build emits the host entry, the browser handoff bundle expected by DSH's `wi
 
 ## Load in local DSH
 
-Build Turnscope first. From a local DSH `0.1.7-rc.1` source checkout, add it as a development dependency of the `web` profile:
+Build Turnscope first. From a local DSH `0.2.0-rc.2` source checkout, add it as a development dependency of the `web` profile:
 
 ```sh
 cd /path/to/deepseek-harness
@@ -126,7 +126,7 @@ the bundle layer (rare; documented for completeness):
 pnpm dsh --profile web
 ```
 
-Verified on `0.1.7-rc.1`: the home page includes Turnscope in the boot manifest, the host API answers, and a real browser displays the **Turns / 轮次** tab and panel.
+Verified on `0.2.0-rc.2`: the home page includes Turnscope in the boot manifest, the host API answers, and a real browser displays the **Turns / 轮次** tab and panel.
 
 
 Open a session and select the **Turns / 轮次** conversation tab. The package remains marked `private` in this checkout, so the documented setup uses a local source path.

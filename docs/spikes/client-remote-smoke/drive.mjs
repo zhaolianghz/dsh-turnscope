@@ -49,10 +49,8 @@ await new Promise(resolve => socket.addEventListener('open', resolve))
 await send('Runtime.enable')
 await send('Page.enable')
 await send('Page.navigate', { url: pageUrl })
-// The app boots its plugin graph, then our probe awaits one round trip. Nine
-// seconds is generous and deterministic enough for a smoke; nothing here is a
-// performance measurement.
-await new Promise(resolve => setTimeout(resolve, 9000))
+// The app boots its plugin graph, then our probe awaits one round trip.
+await new Promise(resolve => setTimeout(resolve, 25000))
 
 const evaluate = async expression =>
   (await send('Runtime.evaluate', { expression, returnByValue: true })).result?.result?.value

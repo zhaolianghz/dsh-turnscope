@@ -38,8 +38,12 @@ elif [ -d "$REPO/node_modules/@deepseek-ai/dsh" ]; then
 else
   SHARED_NODE_MODULES="$HOME/.dsh/profiles/node_modules"
 fi
-PORT="${PORT:-38517}"
-CDP_PORT="${CDP_PORT:-9333}"
+free_port() {
+  node -e "const s = require('node:net').createServer(); s.listen(0, '127.0.0.1', () => { console.log(s.address().port); s.close() })"
+}
+PORT="${PORT:-$(free_port)}"
+CDP_PORT="${CDP_PORT:-$(free_port)}"
+while [ "$CDP_PORT" = "$PORT" ]; do CDP_PORT="$(free_port)"; done
 
 [ -f "$REPO/lib/client.js" ] || { echo "no built client bundle in $REPO — run pnpm build first" >&2; exit 1; }
 [ -d "$SHARED_NODE_MODULES/@deepseek-ai/dsh-web-app" ] || {
@@ -51,6 +55,11 @@ WORK="$(mktemp -d)"
 CHROME_PID=""
 DSH_PID=""
 cleanup() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -f "$WORK/dsh.log" ]; then
+    echo '== DSH host log (last 60 lines) ==' >&2
+    tail -60 "$WORK/dsh.log" >&2
+  fi
   [ -n "$CHROME_PID" ] && kill "$CHROME_PID" 2>/dev/null || true
   pkill -f "user-data-dir=$WORK/chrome" 2>/dev/null || true
   [ -n "$DSH_PID" ] && kill "$DSH_PID" 2>/dev/null || true
